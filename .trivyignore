@@ -1,0 +1,18 @@
+# =============================================================================
+# SecLab — excepciones documentadas de Trivy
+# =============================================================================
+# Cada línea es una CVE que Trivy detecta pero que SecLab considera no
+# explotable en el contexto de un contenedor, con su justificación. Nunca se
+# añade una entrada aquí sin explicar por qué, y nunca para silenciar algo que
+# de verdad afecte a lo que corre dentro del contenedor.
+# =============================================================================
+
+# linux-libc-dev sólo aporta las CABECERAS de la API del kernel de Linux para
+# poder compilar contra ellas (lo necesitan las herramientas de compilación
+# de los perfiles full/full-msf, p. ej. pwntools/ropper). No contiene código
+# ejecutable del kernel: el contenedor nunca ejecuta su propio kernel, corre
+# sobre el del host (tu máquina o la VM en la nube), así que una CVE del
+# kernel marcada sobre este paquete no tiene ninguna vía real de dispararse
+# desde dentro del contenedor. Encontrada publicando full-msf por primera vez
+# (Fase 8/11, ver TESTING_GAPS.md).
+CVE-2026-53398

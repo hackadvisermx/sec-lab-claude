@@ -147,7 +147,18 @@ llegue a un alumno.
 
 Trivy no está instalado en esta máquina de desarrollo; no se ha podido
 ejecutar localmente. Sólo se ha validado la sintaxis de los pasos que lo
-invocan.
+invocan — sí se ejecutó de verdad en GitHub Actions, publicando por primera
+vez (ver más abajo).
+
+**Excepciones documentadas (`.trivyignore`)**: publicar `full-msf` de verdad
+bloqueó por `CVE-2026-53398` en `linux-libc-dev` (cabeceras del kernel de
+Linux, arrastradas por las herramientas de compilación de `full`/`full-msf`).
+Ese paquete no trae código ejecutable del kernel — el contenedor corre sobre
+el kernel del host, nunca sobre el suyo propio — así que no hay ninguna vía
+real de disparar una CVE del kernel desde dentro. Se documentó la excepción
+en `.trivyignore`, en la raíz del repositorio, con la CVE y esta misma
+justificación por escrito. Cualquier excepción nueva sigue el mismo criterio:
+nunca se añade sin explicar por qué no es explotable en un contenedor.
 
 ## Cómo reproducir cada verificación en local
 

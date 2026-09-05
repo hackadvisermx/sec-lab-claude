@@ -119,6 +119,7 @@ jobs:
       - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
+          trivyignores: .trivyignore
           image-ref: ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}
           format: table
           severity: CRITICAL
@@ -230,6 +231,7 @@ jobs:
       - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
+          trivyignores: .trivyignore
           image-ref: ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}
           format: table
           severity: CRITICAL

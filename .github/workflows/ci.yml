@@ -218,6 +218,7 @@ jobs:
       - name: Escaneo de la imagen con Trivy
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
+          trivyignores: .trivyignore
           image-ref: ${{ steps.imagen.outputs.tag }}
           format: table
           severity: CRITICAL,HIGH

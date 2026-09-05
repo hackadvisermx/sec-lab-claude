@@ -58,7 +58,10 @@ ovpn_configurado() {
 }
 
 # permisos_de RUTA -> modo octal, compatible BSD (macOS) y GNU (Linux)
-permisos_de() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }
+# GNU `-c` primero: en Linux, `stat -f` es una opción válida pero distinta
+# ("info del sistema de archivos"), así que nunca fallaría y el `||` no
+# caería a `-c` — devolvería basura en silencio en vez de permisos reales.
+permisos_de() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
 
 # comprobar_permisos_vpn PERFIL -> 0 si el directorio y sus archivos son
 # 700/600. Si no, avisa (nunca bloquea: es el mismo criterio que el resto de

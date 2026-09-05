@@ -45,6 +45,12 @@ variable "private_key_path" {
   default     = ""
 }
 
+variable "config_file_profile" {
+  description = "Perfil de '~/.oci/config' a usar cuando user_ocid/fingerprint/private_key_path se dejan vacíos (autenticación por archivo, el mismo mecanismo que ya usa el CLI 'oci' — ver lib/cloud.sh, sincronizar_tfvars_oracle_desde_env). Vacío = no se usa este mecanismo, hay que rellenar los cuatro campos clásicos."
+  type        = string
+  default     = ""
+}
+
 variable "region" {
   description = "Región de OCI, ej. 'us-ashburn-1'. Ver 'oci iam region list'."
   type        = string
@@ -155,6 +161,42 @@ variable "puerto_ssh" {
   description = "Puerto SSH del contenedor SecLab, publicado en todas las interfaces."
   type        = number
   default     = 2222
+}
+
+variable "habilitar_tailscale" {
+  description = <<-EOT
+    Instala y arranca Tailscale en la instancia durante el bootstrap
+    (paquete oficial, fijado por versión, vía el repositorio apt de
+    Tailscale — nunca el instalador remoto 'curl | sh' sin verificar). Con
+    esto en true:
+      - El puerto SSH deja de publicarse en la lista de seguridad de OCI
+        (0.0.0.0/0) y el contenedor deja de publicarlo en todas las
+        interfaces: pasa a 127.0.0.1, igual que el resto de servicios web.
+      - 'tailscale up --ssh' te deja entrar por la tailnet sin exponer nada
+        a Internet.
+    Requiere 'tailscale_auth_key'. Ver docs/cloud.md, "Tailscale en un
+    despliegue cloud".
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "tailscale_auth_key" {
+  description = "Auth key de Tailscale, efímera y de mínimo privilegio, generada por TI en https://login.tailscale.com/admin/settings/keys — SecLab nunca la genera. Obligatoria si habilitar_tailscale = true (comprobado en main.tf, no aquí: este bloque no puede ver otras variables sin exigir Terraform >= 1.9, y el módulo declara >= 1.5.0)."
+  type        = string
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = var.tailscale_auth_key == "" || can(regex("^tskey-auth-", var.tailscale_auth_key))
+    error_message = "tailscale_auth_key no tiene la forma de una auth key de Tailscale (debe empezar por 'tskey-auth-')."
+  }
+}
+
+variable "tailscale_hostname" {
+  description = "Nombre con el que el nodo aparece en tu tailnet."
+  type        = string
+  default     = "seclab"
 }
 
 variable "habilitar_autodestruccion" {

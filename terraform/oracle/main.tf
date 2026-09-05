@@ -27,7 +27,11 @@ provider "oci" {
   user_ocid        = var.user_ocid != "" ? var.user_ocid : null
   fingerprint      = var.fingerprint != "" ? var.fingerprint : null
   private_key_path = var.private_key_path != "" ? var.private_key_path : null
-  region           = var.region
+  # Alternativa a las tres de arriba: reutiliza un perfil ya existente de
+  # '~/.oci/config' (el mismo que usa el CLI 'oci') sin que este módulo
+  # tenga que leer, copiar ni imprimir ninguna credencial. Ver variables.tf.
+  config_file_profile = var.config_file_profile != "" ? var.config_file_profile : null
+  region              = var.region
 }
 
 locals {
@@ -50,6 +54,9 @@ locals {
     fecha_expiracion          = var.fecha_expiracion
     puerto_ssh                = var.puerto_ssh
     habilitar_autodestruccion = var.habilitar_autodestruccion
+    habilitar_tailscale       = var.habilitar_tailscale
+    tailscale_auth_key        = var.tailscale_auth_key
+    tailscale_hostname        = var.tailscale_hostname
   })
 
   usa_flex = can(regex("Flex$", var.shape))
@@ -100,6 +107,13 @@ resource "oci_core_route_table" "seclab" {
 # Lista de seguridad explícita: sólo SSH de entrada, igual que el firewall de
 # DigitalOcean y GCP. Nada más se publica; los servicios web quedan en
 # 127.0.0.1 dentro de la instancia.
+#
+# Con Tailscale habilitado, el SSH público deja de abrirse por completo: el
+# bloque `ingress_security_rules` es dinámico y no genera nada en ese caso.
+# El egress "all" se mantiene siempre — Tailscale necesita salida UDP hacia
+# sus servidores de coordinación/DERP, e "iniciada desde dentro" no necesita
+# ninguna regla de entrada correspondiente en una lista de seguridad
+# stateful como la de OCI.
 resource "oci_core_security_list" "seclab" {
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.seclab.id
@@ -110,13 +124,16 @@ resource "oci_core_security_list" "seclab" {
     destination = "0.0.0.0/0"
   }
 
-  ingress_security_rules {
-    protocol = "6" # TCP
-    source   = "0.0.0.0/0"
+  dynamic "ingress_security_rules" {
+    for_each = var.habilitar_tailscale ? [] : [1]
+    content {
+      protocol = "6" # TCP
+      source   = "0.0.0.0/0"
 
-    tcp_options {
-      min = var.puerto_ssh
-      max = var.puerto_ssh
+      tcp_options {
+        min = var.puerto_ssh
+        max = var.puerto_ssh
+      }
     }
   }
 }
@@ -163,6 +180,13 @@ resource "oci_core_instance" "seclab" {
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
     user_data           = base64encode(local.cloud_init)
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !var.habilitar_tailscale || var.tailscale_auth_key != ""
+      error_message = "habilitar_tailscale = true exige tailscale_auth_key (generada por ti en https://login.tailscale.com/admin/settings/keys; SecLab nunca la genera)."
+    }
   }
 
   # user_data reescribe /etc/seclab-cloud/entorno con contenido determinista;

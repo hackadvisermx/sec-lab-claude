@@ -229,8 +229,11 @@ verificar_copia() {
         fallos=$(( fallos + 1 ))
     fi
 
-    # Permisos: la copia contiene .env y la llave SSH en claro.
-    modo="$(stat -f '%Lp' "$archivo" 2>/dev/null || stat -c '%a' "$archivo" 2>/dev/null)"
+    # Permisos: la copia contiene .env y la llave SSH en claro. GNU `-c`
+    # primero: en Linux, `stat -f` es una opción válida pero distinta ("info
+    # del sistema de archivos"), así que nunca fallaría y el `||` no caería a
+    # `-c` — devolvería basura en silencio en vez de permisos reales.
+    modo="$(stat -c '%a' "$archivo" 2>/dev/null || stat -f '%Lp' "$archivo" 2>/dev/null)"
     if [ -n "$modo" ] && [ "$modo" != "600" ]; then
         aviso "Los permisos de la copia son ${modo}, no 600."
         detalle "Contiene secretos en claro. Corrígelo con: chmod 600 '${archivo}'"

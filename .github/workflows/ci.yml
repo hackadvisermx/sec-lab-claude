@@ -56,6 +56,13 @@ jobs:
           additional_files: 'bin/seclab'
           check_together: 'yes'
           severity: error
+          # docker/shell/zshrc: config de zsh, no un script bash/sh — no
+          # tiene (ni debe tener) shebang, y ShellCheck no soporta zsh como
+          # shell de destino. Excluido en vez de forzarle una interpretación
+          # que no le corresponde (encontrado ejecutando esto por primera
+          # vez en un runner Linux real, donde el propio action-shellcheck sí
+          # llegó a incluirlo en el escaneo).
+          ignore_names: 'zshrc'
         env:
           SHELLCHECK_OPTS: -x
 

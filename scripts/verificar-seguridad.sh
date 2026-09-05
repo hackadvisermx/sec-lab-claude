@@ -148,7 +148,14 @@ fi
 # -----------------------------------------------------------------------------
 titulo "3. Permisos de archivos sensibles"
 # -----------------------------------------------------------------------------
-permisos_de() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }
+# GNU `stat -c` primero: en Linux es el formato correcto, y en BSD/macOS
+# falla con un error real (opción desconocida), así que el `||` cae al
+# formato BSD `-f` limpiamente. Al revés falla en silencio: BSD `stat -f`
+# ignorado no existe como tal, pero GNU `stat -f` SÍ es una opción válida —
+# significa "info del sistema de archivos", no "info del archivo" — así que
+# en Linux devolvía basura en vez de fallar, y el `||` nunca se activaba.
+# Encontrado ejecutando esto por primera vez en un runner Linux real (CI).
+permisos_de() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
 
 comprobar_permisos() {
     local ruta="$1" esperado="$2" actual

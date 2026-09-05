@@ -89,8 +89,90 @@ cloud_leer_argumentos() {
         "No existe el módulo Terraform de '${CLOUD_PROVEEDOR}' (${CLOUD_DIR})." \
         "" "Revisa terraform/${CLOUD_PROVEEDOR}/README.md."
 
-    [ -z "$CLOUD_TFVARS" ] && CLOUD_TFVARS="${CLOUD_DIR}/terraform.tfvars"
+    local tfvars_por_defecto=false
+    if [ -z "$CLOUD_TFVARS" ]; then
+        CLOUD_TFVARS="${CLOUD_DIR}/terraform.tfvars"
+        tfvars_por_defecto=true
+    fi
+
+    # Sólo cuando se usa la ruta por defecto (nadie pasó --tfvars a mano):
+    # si el alumno pidió explícitamente otro archivo, es su terraform.tfvars
+    # y SecLab no lo toca ni lo regenera.
+    if [ "$tfvars_por_defecto" = true ] && [ "$CLOUD_PROVEEDOR" = "oracle" ]; then
+        sincronizar_tfvars_oracle_desde_env
+    fi
+
     return 0
+}
+
+# sincronizar_tfvars_oracle_desde_env
+#
+# A petición explícita del dueño del proyecto: en vez de mantener
+# terraform/oracle/terraform.tfvars a mano, los datos de la cuenta de Oracle
+# y la auth key de Tailscale se declaran en .env (igual que todo lo demás en
+# SecLab) y este archivo se REGENERA por completo aquí, cada vez, a partir de
+# esas variables — nunca al revés. No es un merge: si algo no está en .env,
+# no aparece en terraform.tfvars, y las comprobaciones de más abajo
+# (exigir_owner_y_ttl, exigir_credenciales_oracle) siguen siendo la barrera
+# real.
+#
+# Autenticación de OCI: NUNCA se copian a .env ni a terraform.tfvars
+# user_ocid/fingerprint/private_key_path. En vez de duplicar esas
+# credenciales en un segundo sitio, se usa `config_file_profile = "DEFAULT"`
+# — el mismo mecanismo con el que ya se autentica el propio CLI `oci` contra
+# ~/.oci/config — así Terraform reutiliza esa configuración tal cual, sin que
+# SecLab la lea, la copie ni la imprima en ningún momento.
+sincronizar_tfvars_oracle_desde_env() {
+    local tfvars="${CLOUD_DIR}/terraform.tfvars"
+    local tenancy region compartment imagen owner ttl curso ssh_pub \
+          registry imagen_ref hab_ts ts_key ts_host
+
+    tenancy="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TENANCY_OCID)"
+    region="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_REGION)"
+    compartment="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_COMPARTMENT_OCID)"
+    imagen="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_IMAGE_OCID)"
+    owner="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_OWNER)"
+    ttl="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TTL)"
+    curso="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_CURSO)"
+    ssh_pub="$(leer_variable "$ARCHIVO_ENV" SECLAB_SSH_PUBKEY)"
+    registry="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_REGISTRY)"
+    imagen_ref="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_IMAGEN_REF)"
+    hab_ts="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_HABILITAR_TAILSCALE)"
+    ts_key="$(leer_variable "$ARCHIVO_ENV" TAILSCALE_AUTH_KEY)"
+    ts_host="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TAILSCALE_HOSTNAME)"
+
+    # Si ninguna variable de Oracle está puesta en .env, no se toca
+    # terraform.tfvars: puede que el alumno lo esté manteniendo a mano
+    # todavía, siguiendo terraform.tfvars.example.
+    if [ -z "$tenancy" ] && [ -z "$region" ] && [ -z "$owner" ]; then
+        return 0
+    fi
+
+    umask 077
+    {
+        printf '# Generado automáticamente por seclab (sincronizar_tfvars_oracle_desde_env)\n'
+        printf '# a partir de .env. NO editar a mano: los cambios se pierden en el próximo\n'
+        printf '# "seclab cloud ... --provider oracle". Edita .env, no este archivo.\n\n'
+        printf 'tenancy_ocid        = "%s"\n' "$tenancy"
+        printf 'config_file_profile = "DEFAULT"\n'
+        printf 'region              = "%s"\n' "$region"
+        printf 'compartment_ocid    = "%s"\n' "${compartment:-$tenancy}"
+        printf 'owner               = "%s"\n' "$owner"
+        printf 'curso               = "%s"\n' "${curso:-seclab}"
+        printf 'fecha_expiracion    = "%s"\n' "$ttl"
+        printf 'image_ocid          = "%s"\n' "$imagen"
+        printf 'ssh_public_key      = "%s"\n' "$ssh_pub"
+        printf 'seclab_registry     = "%s"\n' "$registry"
+        printf 'seclab_imagen_ref   = "%s"\n' "$imagen_ref"
+        if [ "$hab_ts" = "true" ]; then
+            printf 'habilitar_tailscale = true\n'
+            printf 'tailscale_auth_key  = "%s"\n' "$ts_key"
+            printf 'tailscale_hostname  = "%s"\n' "${ts_host:-seclab}"
+        else
+            printf 'habilitar_tailscale = false\n'
+        fi
+    } > "$tfvars"
+    chmod 600 "$tfvars"
 }
 
 # valor_tfvars ARCHIVO CLAVE -> el valor de una asignación `clave = "valor"` o

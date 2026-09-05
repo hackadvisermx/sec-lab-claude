@@ -117,9 +117,20 @@ jobs:
             ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}:latest
 
       - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
+        # scanners: vuln — sin esto, Trivy también activa su escáner de
+        # SECRETOS por defecto, que marca como "CRITICAL: Stripe Secret Key"
+        # contenido de los propios wordlists de Metasploit (pensados para que
+        # el alumno los use al auditar objetivos, no secretos reales de
+        # nadie) y de sus specs de pruebas unitarias (cadenas de ejemplo
+        # enmascaradas, para probar que el redactado de logs funciona).
+        # Encontrado publicando full-msf: esto no es una vulnerabilidad, es
+        # el escáner equivocado para el contenido de una herramienta de
+        # seguridad. El escaneo de vulnerabilidades reales sigue igual de
+        # estricto (severity: CRITICAL, exit-code: 1).
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           trivyignores: .trivyignore
+          scanners: vuln
           image-ref: ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}
           format: table
           severity: CRITICAL
@@ -229,9 +240,20 @@ jobs:
             ghcr.io/${{ github.repository }}/seclab-full-msf:${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.commit }}
 
       - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
+        # scanners: vuln — sin esto, Trivy también activa su escáner de
+        # SECRETOS por defecto, que marca como "CRITICAL: Stripe Secret Key"
+        # contenido de los propios wordlists de Metasploit (pensados para que
+        # el alumno los use al auditar objetivos, no secretos reales de
+        # nadie) y de sus specs de pruebas unitarias (cadenas de ejemplo
+        # enmascaradas, para probar que el redactado de logs funciona).
+        # Encontrado publicando full-msf: esto no es una vulnerabilidad, es
+        # el escáner equivocado para el contenido de una herramienta de
+        # seguridad. El escaneo de vulnerabilidades reales sigue igual de
+        # estricto (severity: CRITICAL, exit-code: 1).
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           trivyignores: .trivyignore
+          scanners: vuln
           image-ref: ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}
           format: table
           severity: CRITICAL

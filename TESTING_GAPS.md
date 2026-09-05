@@ -491,6 +491,26 @@ contenedor, volumen ni red huérfanos con el prefijo de prueba.
 | **`terraform fmt`/`validate` contra un `terraform/` real** | No existe `terraform/` (Fases 10-11) | Se verificó que el job se comporta correctamente ante su ausencia (ver "Verificado"); falta la comprobación positiva cuando exista el directorio |
 | **Linux y Windows/WSL2 para cualquier parte de esta fase** | Sólo macOS arm64, igual que el resto del proyecto | Sigue siendo la brecha más importante del proyecto, ya señalada en fases anteriores |
 
+**Nota (actualización posterior a la redacción de la tabla de arriba)**: el
+pipeline de `publicar.yml` sí se ejecutó de verdad contra GitHub Actions,
+publicando `lite`/`desktop`/`full`/`full-msf` en GHCR. Encontró y corrigió
+varios problemas reales que no se podían ver validando sólo sintaxis: un pin
+de `aquasecurity/trivy-action` roto (etiqueta sin el prefijo `v`, y una
+versión con una dependencia interna ya borrada río arriba), el runner
+quedándose sin disco al construir multi-arch un perfil pesado, un bug de
+permisos de archivo en `scripts/ci/probar-vpn.sh` (UID distinto entre quien
+genera un archivo dentro de un contenedor y quien lo lee después en el
+host), y dos CVEs `CRITICAL` reales bloqueando la publicación (documentadas
+y justificadas en `.trivyignore`, ver `docs/ci.md`). **Pendiente real, no
+resuelto hoy**: el paquete `linux-libc-dev` (cabeceras del kernel, arrastrado
+por las herramientas de compilación de `full`/`full-msf`) va a seguir
+acumulando CVEs nuevas con el tiempo porque Ubuntu se las va asignando al
+paquete según pasan los años; la solución de raíz es un build multi-etapa
+que compile en una etapa aparte y no lleve el compilador ni las cabeceras a
+la imagen final, evitando el problema por completo en vez de ir añadiendo
+una excepción por CVE. Queda como trabajo futuro, no bloqueante para esta
+fase.
+
 ---
 
 ## Fase 9 — Tailscale con acceso remoto comprobado

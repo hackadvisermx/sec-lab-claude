@@ -15,4 +15,26 @@
 # kernel marcada sobre este paquete no tiene ninguna vía real de dispararse
 # desde dentro del contenedor. Encontrada publicando full-msf por primera vez
 # (Fase 8/11, ver TESTING_GAPS.md).
+#
+# ADVERTENCIA: Ubuntu le va acumulando CVEs nuevas a este paquete con el
+# tiempo, así que es esperable que aparezcan más IDs distintos en próximas
+# reconstrucciones, con el mismo razonamiento de fondo. La solución de raíz
+# (pendiente, ver TESTING_GAPS.md) es un build multi-etapa que compile en una
+# etapa aparte y no lleve el compilador/cabeceras a la imagen final. Hasta
+# entonces, cualquier CVE nueva sobre linux-libc-dev que aparezca aquí abajo
+# se añade con esta misma justificación, no una nueva por revisar cada vez.
 CVE-2026-53398
+CVE-2026-64535
+
+# pspy64 (privesc, docker/Dockerfile) es un binario Go estático de
+# DominicBreuker/pspy v1.2.1 (2023-01-17) — la ÚLTIMA versión publicada; no
+# hay una más reciente a la que fijar el pin (comprobado contra la lista de
+# releases del proyecto). Arrastra la librería estándar de Go de esa fecha,
+# con CVE-2023-24538 (bug de escapado en html/template). pspy es una
+# herramienta de línea de comandos que sólo imprime eventos de procesos y
+# archivos por stdout: no usa html/template en ningún punto de su código, así
+# que el código vulnerable está presente en el binario pero no hay ninguna
+# vía de que pspy lo ejecute. Si el proyecto upstream publica una versión
+# nueva, hay que revisar si sigue aplicando esta excepción o si conviene
+# simplemente subir el pin.
+CVE-2023-24538

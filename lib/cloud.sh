@@ -125,12 +125,17 @@ cloud_leer_argumentos() {
 sincronizar_tfvars_oracle_desde_env() {
     local tfvars="${CLOUD_DIR}/terraform.tfvars"
     local tenancy region compartment imagen owner ttl curso ssh_pub \
-          registry imagen_ref hab_ts ts_key ts_host
+          registry imagen_ref hab_ts ts_key ts_host shape
 
     tenancy="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TENANCY_OCID)"
     region="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_REGION)"
     compartment="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_COMPARTMENT_OCID)"
     imagen="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_IMAGE_OCID)"
+    # Vacío = se omite y manda el default de variables.tf (VM.Standard.A1.Flex,
+    # ARM, Always Free). Rellena SECLAB_OCI_SHAPE sólo para el fallback a x86
+    # si tu región no tiene capacidad ARM disponible — ver terraform/oracle/
+    # README.md, "Si tu región no tiene capacidad ARM disponible".
+    shape="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_SHAPE)"
     owner="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_OWNER)"
     ttl="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TTL)"
     curso="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_CURSO)"
@@ -161,6 +166,9 @@ sincronizar_tfvars_oracle_desde_env() {
         printf 'curso               = "%s"\n' "${curso:-seclab}"
         printf 'fecha_expiracion    = "%s"\n' "$ttl"
         printf 'image_ocid          = "%s"\n' "$imagen"
+        if [ -n "$shape" ]; then
+            printf 'shape               = "%s"\n' "$shape"
+        fi
         printf 'ssh_public_key      = "%s"\n' "$ssh_pub"
         printf 'seclab_registry     = "%s"\n' "$registry"
         printf 'seclab_imagen_ref   = "%s"\n' "$imagen_ref"

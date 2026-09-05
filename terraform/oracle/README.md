@@ -37,6 +37,37 @@ oci compute image list \
 O desde la consola web: Compute → Images, filtrando por Ubuntu 22.04 y la
 arquitectura de tu `shape` (ARM para `VM.Standard.A1.Flex`, x86 para el resto).
 
+## Si tu región no tiene capacidad ARM disponible (fallback a x86)
+
+`VM.Standard.A1.Flex` (Ampere ARM, Always Free dentro de los límites del
+tenancy) no está disponible en todas las regiones ni en todo momento — OCI
+puede rechazar el `apply` con un error de capacidad ("Out of host capacity",
+o la forma simplemente no aparece listada para tu región). Cuando pase, la
+imagen de SecLab **no es el problema**: se publica multi-arquitectura
+(`linux/amd64` + `linux/arm64` en el mismo manifest de GHCR), así que
+`docker pull` en la VM trae automáticamente la variante correcta sin que
+tengas que tocar `seclab_imagen_ref` para nada — sólo hace falta cambiar la
+**forma de la instancia** y su **imagen de sistema operativo**, que si tienen
+que ir emparejadas (una imagen aarch64 no arranca en una forma x86 y
+viceversa).
+
+Cambia estas dos variables en `terraform.tfvars` (o en `.env` si usas
+`SECLAB_OCI_*`, ver `sincronizar_tfvars_oracle_desde_env` en `lib/cloud.sh`)
+y repite `seclab cloud plan`/`up`:
+
+| | ARM (por defecto) | x86 (fallback) |
+|---|---|---|
+| `shape` | `VM.Standard.A1.Flex` | `VM.Standard.E4.Flex` |
+| `image_ocid` (región `mx-monterrey-1`, resuelto el 2026-09-05 — vuelve a resolverlo para tu región/fecha con el comando de arriba) | `ocid1.image.oc1.mx-monterrey-1.aaaaaaaa33gwf2bybgepuwu4zzg45ony3etaj5oaxixfpaf4vwhzgpmwyqxq` | `ocid1.image.oc1.mx-monterrey-1.aaaaaaaapsyapvnmysguthfj3rtypwipp7rx3eudhihanwdtnvk635fal4ja` |
+
+**Aviso de coste**: `VM.Standard.E4.Flex` (AMD EPYC) **no forma parte del
+Always Free tier** — a diferencia de `VM.Standard.A1.Flex`, factura desde el
+primer minuto. Revisa la tabla de costes que muestra `seclab cloud up` antes
+de confirmar, y recuerda que el gasto es siempre personal (`docs/cloud.md`).
+El único x86 del Always Free (`VM.Standard.E2.1.Micro`) tiene 1 GB de RAM,
+muy por debajo de lo que necesita el perfil `full`/`full-msf` (ver
+`docs/requisitos.md`), así que no es una alternativa realista aquí.
+
 ## Por qué este módulo crea su propia VCN
 
 DigitalOcean asigna una red por defecto a cada Droplet y GCP trae una red

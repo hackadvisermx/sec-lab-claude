@@ -60,7 +60,16 @@ escribir_variable() {
 }
 
 # leer_variable ARCHIVO CLAVE
+#
+# El `|| true` del grep importa: bajo `pipefail` (bin/seclab hace
+# `set -euo pipefail`), que la clave no exista en el archivo es un resultado
+# perfectamente válido para quien llama (significa "vacía"), pero sin esto
+# `grep` sin coincidencias devuelve 1 y `pipefail` propaga ese 1 como salida
+# de toda la tubería, aunque `cut` sí haya terminado bien. Una asignación
+# `var="$(leer_variable ...)"` para una clave ausente moriría en silencio
+# bajo `set -e` — encontrado de verdad probando SECLAB_OCI_SHAPE (Fase 11),
+# una clave opcional que no todos los .env tienen todavía.
 leer_variable() {
     [ -f "$1" ] || return 0
-    grep -m1 "^${2}=" "$1" 2>/dev/null | cut -d= -f2-
+    { grep -m1 "^${2}=" "$1" 2>/dev/null || true; } | cut -d= -f2-
 }

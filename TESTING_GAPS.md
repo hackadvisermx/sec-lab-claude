@@ -694,6 +694,25 @@ sesión.
 
 ## Fase 11 — GCP y Oracle Cloud
 
+**Bug real encontrado y corregido después de cerrar la verificación de esta
+fase**, al preparar el fallback a x86 para regiones sin capacidad ARM
+(`SECLAB_OCI_SHAPE`, `terraform/oracle/README.md`): `leer_variable()`
+(`lib/secretos.sh`), usada por todo el proyecto para leer claves de `.env`,
+hacía `grep -m1 "^CLAVE=" archivo | cut -d= -f2-`. Bajo `pipefail` (`bin/
+seclab` usa `set -euo pipefail`), si la clave **no existe como línea en el
+archivo** (distinto de existir con valor vacío), `grep` devuelve 1 y
+`pipefail` propaga ese 1 como salida de toda la tubería, aunque `cut` termine
+bien. Una asignación `var="$(leer_variable ...)"` para una clave así de
+ausente mataba el script en silencio bajo `set -e`. No se había manifestado
+antes porque `seclab init` siempre copia `.env.example` completo (toda clave
+aparece, aunque sea vacía) — pero al añadir `SECLAB_OCI_SHAPE` a
+`sincronizar_tfvars_oracle_desde_env` (`lib/cloud.sh`) sin haberla añadido
+todavía a `.env.example`, se reprodujo el caso real: una clave ausente de
+verdad. Corregido con el mismo patrón que ya se usó en `valor_tfvars`
+(Fase 10): `{ grep ... || true; } | cut ...`. Verificado en ambos sentidos
+(clave ausente del todo, y clave presente) en una copia aislada, sin tocar
+`seclab-lab-1`. Añadida también la línea que faltaba en `.env.example`.
+
 **Misma regla de seguridad no negociable que la Fase 10, sin excepción**:
 nunca se ejecutó `terraform apply`, `plan` ni `destroy` de verdad contra GCP
 ni Oracle Cloud; nunca se buscaron ni usaron credenciales reales de esta

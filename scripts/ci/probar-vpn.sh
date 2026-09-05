@@ -92,7 +92,19 @@ if ! docker network inspect "$RED" >/dev/null 2>&1; then
     echo "ERROR: la red '${RED}' no existe; ¿arrancó 'lab' correctamente en el paso 1?" >&2
     exit 1
 fi
-docker run --rm --entrypoint /usr/sbin/openvpn -v "${DIR_SERVIDOR}:/k" "$IMG" --genkey secret /k/ta.key
+# --user "$(id -u):$(id -g)": sin esto, el archivo lo escribe el usuario por
+# defecto de la imagen (seclab, uid 1000) en el bind mount, y en un runner
+# Linux real (uid del usuario 'runner' normalmente distinto de 1000) el `cp`
+# de más abajo falla con "Permission denied" — encontrado ejecutando esto
+# por primera vez en un runner de CI real, nunca visto en macOS/Docker
+# Desktop, donde el mapeo de UID del volumen enmascaraba el problema.
+docker run --rm --user "$(id -u):$(id -g)" --entrypoint /usr/sbin/openvpn -v "${DIR_SERVIDOR}:/k" "$IMG" --genkey secret /k/ta.key
+# `--genkey secret` la crea en 600: la propia imagen del servidor (más abajo)
+# corre como el usuario 'seclab' de la imagen, no como el UID del runner que
+# acaba de crear el archivo, así que sin esto el servidor tampoco podría
+# leerla. Es una clave de prueba desechable de este único job de CI, sin
+# ninguna sensibilidad real: ampliar sus permisos aquí no expone nada.
+chmod 644 "${DIR_SERVIDOR}/ta.key"
 cat > "${DIR_SERVIDOR}/servidor.conf" <<EOF
 dev tun-srv
 dev-type tun

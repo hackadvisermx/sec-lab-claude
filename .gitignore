@@ -1,0 +1,40 @@
+# --- Secretos y configuración local ---
+.env
+.env.local
+/secretos/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+*.ovpn
+
+# --- VPN: configuraciones y estado (nunca en Git) ---
+# Anclados con / a la raíz del repositorio: sin la barra inicial, el patrón
+# 'vpn/' coincidiría a cualquier profundidad y se tragaría templates/vpn/,
+# que sí debe versionarse.
+/vpn/
+/vpn-state/
+
+# --- Datos del usuario ---
+/workspace/
+/backups/
+
+# --- Estado de servicios opcionales ---
+/tailscale-state/
+/mcp-state/
+
+# --- Terraform ---
+/terraform/.terraform/
+/terraform/*.tfstate
+/terraform/*.tfstate.backup
+/terraform/*.tfvars
+
+# --- Lenguajes y editores ---
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+.idea/
+.vscode/

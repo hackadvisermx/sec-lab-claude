@@ -1,0 +1,239 @@
+name: Publicar imágenes
+
+# =============================================================================
+# SecLab — publicación de imágenes por tag (Fase 8)
+# =============================================================================
+# Se dispara SÓLO con un tag 'v*' (nunca en cada push a una rama). El primer
+# job (verificar) reutiliza ci.yml completo como workflow reusable: no se
+# publica nada si falla ShellCheck, Hadolint, la validación de Compose,
+# gitleaks, la revisión de seguridad, el build+smoke test de cada perfil o el
+# test de VPN. Esto es lo mismo que exige 'bin/seclab image publish' para una
+# publicación local (ver cmd_image_publish en bin/seclab), llevado al pipeline
+# de CI para la publicación multi-arch real.
+#
+# Publica en GHCR (ghcr.io/<owner>/<repo>/seclab-<perfil>), con SBOM (Syft),
+# procedencia (provenance de build-push-action) y firma keyless (Cosign, OIDC
+# de GitHub Actions). Política completa: docs/ci.md.
+#
+# full-msf NUNCA se publica automáticamente: es opt-in explícito vía
+# workflow_dispatch con 'incluir_full_msf: true' (documentado en docs/ci.md,
+# igual que docker-bake.hcl la mantiene fuera del grupo "todos").
+# =============================================================================
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      incluir_full_msf:
+        description: >-
+          Publicar también el perfil full-msf (opt-in explícito; nunca se
+          incluye por defecto ni con un push de tag).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Reutiliza el pipeline completo de ci.yml como puerta de entrada. Si
+  # cualquiera de sus jobs falla, ningún job de este workflow llega a
+  # ejecutarse: GitHub Actions no continúa con 'needs' si la dependencia falla.
+  verificar:
+    name: Verificación completa (ci.yml)
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build-publish:
+    name: Build multi-arch y publicación (${{ matrix.perfil }})
+    needs: verificar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # Cosign keyless (OIDC) y attestations de build-push-action
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        perfil: [lite, desktop, full]
+    outputs: {}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Metadatos de versión
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "fecha=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build multi-arch + push + provenance (perfil ${{ matrix.perfil }})
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: ${{ matrix.perfil }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: false # el SBOM se genera aparte con Syft y se adjunta con Cosign, más abajo
+          build-args: |
+            SECLAB_VERSION=${{ steps.meta.outputs.version }}
+            SECLAB_COMMIT=${{ steps.meta.outputs.commit }}
+            SECLAB_FECHA=${{ steps.meta.outputs.fecha }}
+          tags: |
+            ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}:${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.commit }}
+            ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}:latest
+
+      - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}
+          format: table
+          severity: CRITICAL
+          exit-code: '1'
+
+      - name: Instalar Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generar SBOM (Syft, formato SPDX)
+        run: |
+          syft "ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}" \
+            -o spdx-json="sbom-${{ matrix.perfil }}.spdx.json"
+
+      - name: Instalar Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Adjuntar el SBOM a la imagen (Cosign attach)
+        run: |
+          cosign attach sbom \
+            --sbom "sbom-${{ matrix.perfil }}.spdx.json" \
+            "ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}"
+
+      - name: Firmar la imagen (Cosign, keyless con OIDC de GitHub Actions)
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}"
+
+      - name: Firmar también el SBOM adjunto
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}" \
+            --attachment sbom
+
+      - name: Subir el SBOM como artefacto del workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.perfil }}
+          path: sbom-${{ matrix.perfil }}.spdx.json
+          retention-days: 90
+
+  # full-msf: mismo procedimiento, pero SÓLO si se pidió explícitamente por
+  # workflow_dispatch. Un push de tag normal NUNCA ejecuta este job.
+  build-publish-full-msf:
+    name: Build multi-arch y publicación (full-msf, opt-in)
+    needs: verificar
+    if: github.event_name == 'workflow_dispatch' && inputs.incluir_full_msf == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Metadatos de versión
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=${version:-0.0.0-manual}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "fecha=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build multi-arch + push + provenance (full-msf)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: full-msf
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: false
+          build-args: |
+            SECLAB_VERSION=${{ steps.meta.outputs.version }}
+            SECLAB_COMMIT=${{ steps.meta.outputs.commit }}
+            SECLAB_FECHA=${{ steps.meta.outputs.fecha }}
+          tags: |
+            ghcr.io/${{ github.repository }}/seclab-full-msf:${{ steps.meta.outputs.version }}
+            ghcr.io/${{ github.repository }}/seclab-full-msf:${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.commit }}
+
+      - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}
+          format: table
+          severity: CRITICAL
+          exit-code: '1'
+
+      - name: Instalar Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generar SBOM (Syft, formato SPDX)
+        run: |
+          syft "ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}" \
+            -o spdx-json="sbom-full-msf.spdx.json"
+
+      - name: Instalar Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Adjuntar el SBOM a la imagen (Cosign attach)
+        run: |
+          cosign attach sbom \
+            --sbom "sbom-full-msf.spdx.json" \
+            "ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}"
+
+      - name: Firmar la imagen (Cosign, keyless con OIDC de GitHub Actions)
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}"
+
+      - name: Firmar también el SBOM adjunto
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}" \
+            --attachment sbom
+
+      - name: Subir el SBOM como artefacto del workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-full-msf
+          path: sbom-full-msf.spdx.json
+          retention-days: 90

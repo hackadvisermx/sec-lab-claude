@@ -1,0 +1,17 @@
+# Ejemplos de uso, uno por línea: herramienta|ejemplo
+# Usan objetivos de laboratorio o la propia máquina, que son reproducibles para
+# todo el grupo. Ver docs/uso-autorizado.md.
+nmap|nmap -sV -p- 10.10.10.10        # servicios y versiones de un objetivo
+whatweb|whatweb http://10.10.10.10   # tecnologías que usa un sitio web
+tcpdump|sudo tcpdump -i any -n port 80 -w captura.pcap
+socat|socat TCP-LISTEN:4444,reuseaddr - # escucha para una reverse shell
+netcat-openbsd|nc -lvnp 4444           # escucha simple
+curl|curl -sI https://example.com     # sólo las cabeceras
+jq|cat datos.json | jq '.resultados[]'
+ripgrep|rg -i "password" .            # busca recursivamente, rápido
+fzf|historia | fzf                    # filtro interactivo sobre cualquier lista
+tmux|tmux new -A -s seclab            # sesión persistente que sobrevive al SSH
+git|git log --oneline --graph
+python3|python3 -m http.server 8000   # servidor para transferir archivos
+openssh-client|ssh -i llave -p 22 usuario@objetivo
+bind9-dnsutils|dig +short AXFR ejemplo.com @10.10.10.10

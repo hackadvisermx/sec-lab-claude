@@ -1,0 +1,227 @@
+name: CI
+
+# =============================================================================
+# SecLab — integración continua (Fase 8)
+# =============================================================================
+# Corre en cada push a cualquier rama y en cada pull request. Se excluyen los
+# tags (`tags-ignore`): un tag `v*` dispara en su lugar publicar.yml, que
+# reutiliza este mismo workflow como paso previo obligatorio (job `verificar`)
+# antes de publicar nada — ver publicar.yml y docs/ci.md.
+#
+# Todos los jobs de aquí son de sólo lectura o corren contra un runner
+# efímero de GitHub: ninguno toca ninguna instalación real de SecLab. Los
+# jobs que arrancan contenedores (build-test, vpn-test) lo hacen dentro del
+# propio runner, que se destruye al terminar; no hay ningún riesgo de
+# confundir un proyecto de Compose de prueba con una instancia real, porque
+# aquí no existe ninguna instancia real.
+# =============================================================================
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['v*']
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sintaxis (bash -n / sh -n)
+        run: |
+          set -e
+          for f in bin/seclab lib/*.sh scripts/*.sh scripts/ci/*.sh docker/*.sh docker/shell/*.sh; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              docker/verificar-capacidades.sh|docker/descargar-fijado.sh|docker/shell/seclab-vpn-hook.sh)
+                sh -n "$f" ;;
+              *)
+                bash -n "$f" ;;
+            esac
+          done
+      - name: ShellCheck
+        # severity=error: bloqueante para bugs reales; los avisos de estilo
+        # (SC2034/SC2155/SC2164, principalmente en código ya verificado de
+        # fases anteriores) quedan documentados como deuda técnica en
+        # TESTING_GAPS.md, no como una comprobación que finge no verlos.
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: '.'
+          additional_files: 'bin/seclab'
+          check_together: 'yes'
+          severity: error
+        env:
+          SHELLCHECK_OPTS: -x
+
+  # ---------------------------------------------------------------------------
+  hadolint:
+    name: Hadolint (docker/Dockerfile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/Dockerfile
+          # DL3008/DL3009 (fijar versión de paquetes apt) se ignoran a propósito:
+          # la política del proyecto (docs/politica-herramientas.md) es fijar por
+          # checksum SÓLO las herramientas ofensivas de evolución rápida que se
+          # descargan fuera de apt; los paquetes base de Ubuntu siguen su LTS.
+          # failure-threshold=error: los avisos DL4006 (pipefail explícito por
+          # RUN) y DL3025 (JSON en CMD) preexistentes de fases anteriores quedan
+          # como deuda técnica documentada (ver docs/ci.md y TESTING_GAPS.md), no
+          # como una comprobación que finge no verlos.
+          ignore: DL3008,DL3009
+          failure-threshold: error
+
+  # ---------------------------------------------------------------------------
+  compose-validate:
+    name: Validar Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker-compose.yml solo
+        run: docker compose -f docker-compose.yml config --quiet
+      - name: + override de escritorio
+        run: docker compose -f docker-compose.yml -f docker-compose.desktop.yml config --quiet
+      - name: + override de VPN
+        run: docker compose -f docker-compose.yml -f docker-compose.vpn.yml config --quiet
+      - name: + escritorio + VPN
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.desktop.yml \
+            -f docker-compose.vpn.yml config --quiet
+      - name: docker-bake.hcl (los cuatro perfiles)
+        run: |
+          docker buildx bake --print lite >/dev/null
+          docker buildx bake --print desktop >/dev/null
+          docker buildx bake --print full >/dev/null
+          docker buildx bake --print full-msf >/dev/null
+
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: gitleaks (escaneo de secretos, bloqueante)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: Terraform (fmt / validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Comprobar si existe terraform/
+        id: existe
+        run: |
+          if [ -d terraform ]; then
+            echo "existe=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "existe=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Aviso — sin directorio terraform/ todavía
+        if: steps.existe.outputs.existe == 'false'
+        run: |
+          echo "::notice::No existe terraform/ (Fases 10-11, sin implementar todavía). Este job no valida nada porque no hay nada que validar; no se finge una comprobación inexistente." >&2
+      - name: setup-terraform
+        if: steps.existe.outputs.existe == 'true'
+        uses: hashicorp/setup-terraform@v3
+      - name: terraform fmt -check
+        if: steps.existe.outputs.existe == 'true'
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+      - name: terraform init -backend=false
+        if: steps.existe.outputs.existe == 'true'
+        working-directory: terraform
+        run: terraform init -backend=false
+      - name: terraform validate
+        if: steps.existe.outputs.existe == 'true'
+        working-directory: terraform
+        run: terraform validate
+
+  # ---------------------------------------------------------------------------
+  seguridad:
+    name: Revisión de seguridad (scripts/verificar-seguridad.sh, bloqueante)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: .env efímero de CI
+        run: ./scripts/ci/preparar-env.sh seclabci 2299
+      - name: scripts/verificar-seguridad.sh
+        run: ./scripts/verificar-seguridad.sh
+      - name: Limpieza
+        if: always()
+        run: |
+          rm -f ./ci-ssh-key ./ci-ssh-key.pub ./.env
+          rm -rf ./vpn ./workspace ./backups ./secretos
+
+  # ---------------------------------------------------------------------------
+  # Construye cada perfil implementado, lo arranca de verdad, pasa los smoke
+  # tests (Fase 5) y escanea la imagen con Trivy. Un runner de GitHub por
+  # combinación de la matriz: no hay ninguna instancia compartida que pueda
+  # confundirse con la de un alumno.
+  build-test:
+    name: Build + smoke test (${{ matrix.perfil }})
+    runs-on: ubuntu-latest
+    needs: [shellcheck, hadolint, compose-validate, gitleaks, seguridad]
+    strategy:
+      fail-fast: false
+      matrix:
+        perfil: [lite, desktop, full]
+    steps:
+      - uses: actions/checkout@v4
+      - name: .env efímero de CI
+        run: ./scripts/ci/preparar-env.sh "seclabci${{ matrix.perfil }}" 2299
+      - name: Construir y arrancar el laboratorio (perfil ${{ matrix.perfil }})
+        # 'seclab image build' construye para la arquitectura del runner (el
+        # multi-arch real vía 'docker buildx bake ...-multiarch' sólo ocurre en
+        # publicar.yml, con QEMU y credenciales de registry). 'seclab start' ya
+        # espera a que el contenedor esté 'healthy' (hasta 120s, ver
+        # lib/docker.sh:esperar_salud) y aborta si no lo consigue: no hace
+        # falta ningún sondeo adicional aquí.
+        run: |
+          ./bin/seclab image build --profile ${{ matrix.perfil }}
+          ./bin/seclab start --profile ${{ matrix.perfil }}
+      - name: Smoke tests (scripts/smoke.sh)
+        run: ./scripts/smoke.sh ${{ matrix.perfil }}
+      - name: Leer la etiqueta real de la imagen construida
+        id: imagen
+        run: echo "tag=$(grep -m1 '^SECLAB_IMAGE=' .env | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
+      - name: Escaneo de la imagen con Trivy
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ steps.imagen.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+        # exit-code 0: el escaneo informa pero no bloquea la CI de rama/PR.
+        # publicar.yml SÍ trata el hallazgo CRITICAL como bloqueante antes de
+        # publicar (ver ese workflow y docs/ci.md).
+      - name: Limpieza
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.desktop.yml \
+            -f docker-compose.vpn.yml down --volumes --remove-orphans 2>/dev/null || true
+          rm -f ./ci-ssh-key ./ci-ssh-key.pub ./.env
+          rm -rf ./vpn ./workspace ./backups ./secretos
+
+  # ---------------------------------------------------------------------------
+  vpn-test:
+    name: Test de VPN (scripts/ci/probar-vpn.sh)
+    runs-on: ubuntu-latest
+    needs: [shellcheck, hadolint, compose-validate, gitleaks, seguridad]
+    steps:
+      - uses: actions/checkout@v4
+      - name: scripts/ci/probar-vpn.sh
+        run: ./scripts/ci/probar-vpn.sh

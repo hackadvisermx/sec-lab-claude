@@ -1,0 +1,134 @@
+# =============================================================================
+# SecLab — runtime local
+# =============================================================================
+# El nombre de proyecto es configurable (SECLAB_PROJECT) para permitir varias
+# instancias en la misma máquina. Por eso no hay `container_name` fijo.
+# =============================================================================
+
+name: ${SECLAB_PROJECT:-seclab}
+
+services:
+  lab:
+    image: ${SECLAB_IMAGE:-seclab-lite:0.1.0}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${SECLAB_PERFIL:-lite}
+      args:
+        SECLAB_VERSION: ${SECLAB_VERSION:-0.1.0}
+        SECLAB_COMMIT: ${SECLAB_COMMIT:-desconocido}
+        SECLAB_FECHA: ${SECLAB_FECHA:-desconocida}
+        SECLAB_USUARIO: ${SECLAB_USUARIO:-seclab}
+        SECLAB_UID: ${SECLAB_UID:-1000}
+        SECLAB_GID: ${SECLAB_GID:-1000}
+    init: true
+    restart: unless-stopped
+
+    # Se parte de cero y se conceden sólo dos capacidades:
+    #   NET_RAW           nmap con SYN scan, ping, tcpdump, arp. Sin esto el
+    #                     laboratorio no sirve para lo que existe.
+    #   NET_BIND_SERVICE  levantar un listener en un puerto bajo durante una
+    #                     práctica (un servidor HTTP en el 80, por ejemplo).
+    #
+    # NET_ADMIN no está en el conjunto de base a propósito: manipular
+    # interfaces y rutas sólo hace falta para la VPN autorizada (Fase 7), y
+    # sólo cuando de verdad se va a usar. `docker-compose.vpn.yml` lo añade
+    # (junto con /dev/net/tun) a ESTE mismo servicio cuando el CLI necesita
+    # operar un túnel — 'lab' no cambia de imagen ni de contenedor para eso,
+    # sólo gana esas dos concesiones mientras el override esté aplicado.
+    cap_drop:
+      - ALL
+    # El conjunto mínimo verificado con el que arrancan el entrypoint, sshd,
+    # sudo y las herramientas de red. Quitar cualquiera de los seis primeros
+    # impide que el contenedor llegue siquiera a arrancar.
+    cap_add:
+      - CHOWN             # ajustar el propietario de /workspace y del estado
+      - DAC_OVERRIDE      # preparar archivos del usuario de laboratorio
+      - FOWNER            # fijar permisos de llaves y authorized_keys
+      - SETGID            # sshd y sudo cambian de grupo
+      - SETUID            # sshd y sudo cambian de usuario
+      - SYS_CHROOT        # separación de privilegios de sshd
+      - AUDIT_WRITE       # registro de inicios de sesión de sshd
+      - KILL              # gestión de procesos hijos
+      - NET_RAW           # nmap, ping, tcpdump: sin esto el lab no sirve
+      - NET_BIND_SERVICE  # levantar un listener en un puerto bajo
+
+    # `no-new-privileges` NO se activa, y conviene entender por qué:
+    # el perfil de entrenamiento concede sudo sin contraseña al usuario del
+    # laboratorio, así que la escalada dentro del contenedor ya es explícita y
+    # deliberada. Con no_new_privs, además, el kernel se niega a aplicar las
+    # capacidades de fichero de binarios como nmap, que dejaría de arrancar.
+    # Sería un candado que no cierra nada y rompe la herramienta principal.
+
+    environment:
+      SECLAB_PERFIL: ${SECLAB_PERFIL:-lite}
+      SECLAB_USUARIO: ${SECLAB_USUARIO:-seclab}
+      TZ: ${SECLAB_TZ:-Europe/Madrid}
+      # Barra de estado de tmux: powerline (por defecto) o ascii, para
+      # terminales sin Nerd Font. Lo activa `seclab doctor` tras preguntar.
+      SECLAB_GLIFOS: ${SECLAB_GLIFOS:-powerline}
+
+      # Servicios opcionales. Vacío significa «según el perfil»: el perfil
+      # `desktop` trae escritorio, code-server y página de bienvenida sin que
+      # haya que activar tres variables a mano, y `lite` no trae ninguno.
+      # Con true o false manda quien lo escribe.
+      SECLAB_HABILITAR_DESKTOP: ${SECLAB_HABILITAR_DESKTOP-}
+      SECLAB_HABILITAR_CODE: ${SECLAB_HABILITAR_CODE-}
+      SECLAB_HABILITAR_WEB: ${SECLAB_HABILITAR_WEB-}
+      SECLAB_HABILITAR_JUPYTER: ${SECLAB_HABILITAR_JUPYTER-}
+
+      # Resolución del escritorio. La ve el navegador a través de noVNC, así
+      # que conviene que quepa en la pantalla del alumno.
+      SECLAB_RESOLUCION: ${SECLAB_RESOLUCION:-1440x900}
+
+      # Puertos del HOST, sólo para la página de bienvenida: sus enlaces se
+      # abren en el navegador del alumno, no dentro del contenedor.
+      SECLAB_PUERTO_SSH: ${SECLAB_PUERTO_SSH:-2222}
+      SECLAB_PUERTO_NOVNC: ${SECLAB_PUERTO_NOVNC:-6080}
+      SECLAB_PUERTO_CODE: ${SECLAB_PUERTO_CODE:-8443}
+      SECLAB_PUERTO_JUPYTER: ${SECLAB_PUERTO_JUPYTER:-8888}
+      # Llave pública del alumno. Sin ella el contenedor aborta el arranque:
+      # el acceso por contraseña está deshabilitado y no hay alternativa.
+      SECLAB_SSH_PUBKEY: ${SECLAB_SSH_PUBKEY:-}
+      SECLAB_VNC_PASSWORD: ${SECLAB_VNC_PASSWORD:-}
+      SECLAB_CODE_PASSWORD: ${SECLAB_CODE_PASSWORD:-}
+      SECLAB_JUPYTER_TOKEN: ${SECLAB_JUPYTER_TOKEN:-}
+
+    # Sólo se publica lo que existe. Los puertos del escritorio, code-server y
+    # la página de bienvenida los añade docker-compose.desktop.yml, que el CLI
+    # aplica únicamente cuando el perfil los trae: un puerto publicado sin nada
+    # detrás es una promesa incumplida y, además, ocupa el puerto.
+    ports:
+      - "${SECLAB_BIND:-127.0.0.1}:${SECLAB_PUERTO_SSH:-2222}:22"
+
+    volumes:
+      - seclab-home:/home/${SECLAB_USUARIO:-seclab}
+      - ${SECLAB_WORKSPACE:-./workspace}:/workspace
+      # Los tres perfiles de VPN (vpnhtb, vpntry, vpncli), de sólo lectura y
+      # siempre montados: así 'seclab vpn list'/'seclab-vpn status' pueden leer
+      # qué hay configurado aunque docker-compose.vpn.yml (que concede
+      # NET_ADMIN y /dev/net/tun para poder USARLOS) no esté aplicado.
+      - ./vpn:/etc/seclab/vpn:ro
+
+    networks:
+      - seclab
+
+    deploy:
+      resources:
+        limits:
+          cpus: "${SECLAB_CPUS:-2}"
+          memory: ${SECLAB_MEM:-4g}
+
+    # El healthcheck viene de la imagen (`seclab-salud`): abre una conexión al
+    # puerto 22 y exige el saludo del protocolo SSH, y evalúa sólo los servicios
+    # opcionales que estén habilitados, de modo que un servicio apagado nunca
+    # puede reportar unhealthy. Los servicios web se añaden en la Fase 5.
+
+volumes:
+  seclab-home:
+    name: ${SECLAB_PROJECT:-seclab}-home
+
+networks:
+  seclab:
+    name: ${SECLAB_PROJECT:-seclab}-net
+    driver: bridge

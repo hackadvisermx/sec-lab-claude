@@ -1,0 +1,50 @@
+# Paquetes del perfil `full`: web, Active Directory, escalada de privilegios y
+# CTF. Se instalan SOBRE los de `lite` y `desktop`.
+#
+# Todo lo de esta lista viene de apt porque el repositorio de Ubuntu 26.04 está
+# al día en estas herramientas: sqlmap 1.10, ffuf 2.1, gobuster 3.8,
+# impacket 0.13, hashcat 7.1, radare2 6.0, pwntools 4.15. Se comprobó una por
+# una antes de escribirla aquí; ver docs/politica-herramientas.md.
+#
+# Lo que en Ubuntu va por detrás —nikto 2.1.5 frente a 2.6.1— o no existe
+# —linPEAS, winPEAS, pspy, wordlists— se instala desde su publicación oficial
+# con versión fijada y checksum verificado, y queda anotado en el manifiesto.
+
+# --- Web ---
+sqlmap
+ffuf
+gobuster
+dirb
+wfuzz
+wafw00f
+sslscan
+dnsrecon
+hydra
+medusa
+# Dependencias de Perl que necesita nikto, que se instala fijado desde su
+# publicación oficial.
+perl
+libnet-ssleay-perl
+libxml-writer-perl
+
+# --- Active Directory y red Windows ---
+smbclient
+smbmap
+ldap-utils
+krb5-user
+python3-impacket
+
+# --- Contraseñas y hashes ---
+john
+hashcat
+
+# --- Análisis y CTF ---
+radare2
+gdb
+python3-pwntools
+ltrace
+strace
+binwalk
+foremost
+libimage-exiftool-perl
+steghide

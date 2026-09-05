@@ -1,0 +1,96 @@
+# Paquetes del perfil `lite`: shell, red, recon básico y utilidades comunes.
+# Una línea por paquete. Las líneas que empiezan por # se ignoran.
+#
+# La imagen base (Ubuntu 26.04 LTS) está anclada por el digest de su lista de
+# manifiestos, y el build genera un manifiesto con las versiones realmente
+# instaladas. La ruta principal para el alumnado es descargar la imagen ya
+# publicada, con lo que todo el mundo obtiene bit a bit lo mismo.
+#
+# Aquí sólo van herramientas de sistema y de red, donde el repositorio de la
+# distribución está al día. Las herramientas ofensivas de evolución rápida se
+# instalan desde su publicación oficial con versión fijada y checksum
+# verificado; ver docs/politica-herramientas.md.
+
+# --- Base del sistema ---
+ca-certificates
+locales
+tzdata
+sudo
+procps
+psmisc
+less
+file
+gnupg
+
+# --- Shell y edición ---
+command-not-found
+bash
+bash-completion
+zsh
+tmux
+vim
+nano
+
+# --- Utilidades de trabajo ---
+git
+curl
+wget
+jq
+ripgrep
+fzf
+tree
+unzip
+zip
+7zip
+rsync
+xxd
+bsdextrautils
+
+# --- Red ---
+# Nombres reales, no transitorios: 'dnsutils' y 'p7zip-full' son paquetes puente
+# y el manifiesto no podría informar de su versión.
+iproute2
+iputils-ping
+net-tools
+bind9-dnsutils
+whois
+netcat-openbsd
+socat
+tcpdump
+openssl
+telnet
+traceroute
+
+# --- Recon básico ---
+nmap
+whatweb
+libcap2-bin
+# nikto NO está aquí: el paquete de Ubuntu es de una versión muy anterior a la
+# actual. Se instalará desde su publicación oficial dentro del paquete `web`
+# (Fase 12), que es donde corresponde a un escáner de vulnerabilidades web.
+
+# --- Acceso ---
+openssh-server
+openssh-client
+
+# --- VPN autorizada (Fase 7) ---
+# openvpn e iptables van en TODOS los perfiles (no en una imagen aparte): con
+# el diseño de Fase 7, la VPN es un atajo dentro del propio contenedor de
+# laboratorio, activado por 'seclab-vpn' (/usr/local/bin/seclab-vpn) sólo
+# cuando docker-compose.vpn.yml concede NET_ADMIN y /dev/net/tun a 'lab'. Sin
+# ese override, ambos binarios están instalados pero no pueden hacer nada.
+openvpn
+iptables
+
+# --- Supervisión de servicios ---
+# Desde el perfil `desktop` hay más de un proceso que mantener vivo (sshd, el
+# servidor X con VNC, websockify, code-server). Se usa supervisor en todos los
+# perfiles, incluido `lite` con sólo sshd, para que el arranque siga el mismo
+# camino en todos: dos formas de arrancar serían dos verdades que acabarían
+# discrepando.
+supervisor
+
+# --- Python ---
+python3
+python3-pip
+python3-venv

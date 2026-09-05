@@ -1,0 +1,43 @@
+# =============================================================================
+# {{NOMBRE_LAB}} — ficha del laboratorio
+# =============================================================================
+# Creado: {{FECHA}}
+# Perfil VPN: {{PERFIL_VPN}}
+#
+# Este archivo es tu cuaderno de trabajo, no un cortafuegos. SecLab no lo lee
+# para decidir qué puedes hacer: sirve para que tú tengas claro dónde estás
+# trabajando y para que el informe final salga solo.
+# =============================================================================
+
+## Objetivo y autorización
+# Plataforma o cliente, y de dónde viene el permiso.
+# HTB y TryHackMe: sus términos de servicio. Cliente: la autorización escrita.
+Plataforma:
+Autorización:
+
+## Perfil VPN y rangos
+# Rellenado automáticamente si creaste el lab con --vpn.
+# Después de conectar, contrasta con `seclab vpn status`.
+Perfil: {{PERFIL_VPN}}
+Rangos: {{RANGOS_VPN}}
+
+## Objetivos
+# IPs, nombres de máquina, dominios.
+
+## Ventana de trabajo
+# Fechas y horas en las que tiene sentido trabajar sobre esto.
+
+## Herramientas previstas
+
+## Límites que te impones
+# Intensidad de fuzzing, hilos de fuerza bruta, escaneos agresivos.
+# Útil para no tumbar una máquina compartida y para justificar el método.
+
+## Evidencias
+# Qué guardas y dónde. Las capturas van a screenshots/, el botín a loot/.
+
+## Remediación
+# Qué recomendarías arreglar. Es la parte que convierte un writeup en un informe.
+
+## Limpieza
+# Qué dejaste en la máquina y qué habría que retirar.

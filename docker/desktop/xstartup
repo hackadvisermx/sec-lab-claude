@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# =============================================================================
+# SecLab — sesión de escritorio XFCE
+# =============================================================================
+# Lo arranca supervisor como programa aparte del servidor X, no como hijo suyo:
+# así, si la sesión se cae, se reinicia sin tirar el servidor X ni la conexión
+# VNC del navegador.
+#
+# Por eso lo primero que hace es esperar a que el servidor X esté escuchando.
+# =============================================================================
+
+set -uo pipefail
+
+DISPLAY="${DISPLAY:-:1}"
+export DISPLAY
+
+# XFCE necesita un bus de sesión propio. Sin él, el panel arranca pero ni la
+# configuración ni los menús funcionan, y el síntoma no dice por qué.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HOME}/.cache}"
+install -d -m 0700 "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+
+# --- Configuración del escritorio -------------------------------------------
+# Se siembra la del curso la primera vez. Sin nada, XFCE abre un diálogo
+# preguntando si quieres el panel por defecto o uno vacío, y ese diálogo
+# aparece dentro del navegador sin contexto ninguno.
+#
+# Lo que ya esté editado no se toca: se compara con las versiones que trae la
+# imagen y sólo se actualiza si el archivo coincide con una de ellas, es decir
+# si nadie lo ha cambiado. Es el mismo criterio que con ~/.tmux.conf.local.
+SEMILLA=/opt/seclab/desktop
+
+sha_de() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+# sembrar ORIGEN DESTINO [PRISTINO...]
+#   - si el destino no existe, se copia
+#   - si existe y coincide con el origen, no hay nada que hacer
+#   - si existe y coincide con alguna versión anterior conocida (los PRISTINO),
+#     se actualiza: nadie lo había tocado
+#   - si no coincide con ninguna, es del alumno y se deja como está
+sembrar() {
+    local origen="$1" destino="$2"
+    shift 2
+    local actual pristino
+
+    install -d -m 0700 "$(dirname "$destino")"
+
+    if [ ! -e "$destino" ]; then
+        cp "$origen" "$destino"
+        return 0
+    fi
+
+    actual="$(sha_de "$destino")"
+    [ "$actual" = "$(sha_de "$origen")" ] && return 0
+
+    for pristino in "$@"; do
+        if [ -r "$pristino" ] && [ "$actual" = "$(sha_de "$pristino")" ]; then
+            cp "$origen" "$destino"
+            printf 'Actualizada la configuración del escritorio: %s\n' "$(basename "$destino")" >&2
+            return 0
+        fi
+    done
+    return 0
+}
+
+XFCONF_DIR="${XDG_CONFIG_HOME}/xfce4/xfconf/xfce-perchannel-xml"
+
+# La barra superior, con los lanzadores de terminal y navegador. El «pristino»
+# es el default.xml de XFCE: quien viene de una instalación anterior lo tiene
+# tal cual, y ahí sí conviene actualizarlo.
+sembrar "${SEMILLA}/xfce4-panel.xml" "${XFCONF_DIR}/xfce4-panel.xml" \
+        /etc/xdg/xfce4/panel/default.xml
+
+# La terminal, con la Nerd Font: sin ella los separadores de la barra de tmux
+# salen como cuadros dentro del escritorio.
+sembrar "${SEMILLA}/terminalrc" "${XDG_CONFIG_HOME}/xfce4/terminal/terminalrc"
+
+# Iconos del escritorio y fondo de color plano.
+sembrar "${SEMILLA}/xfce4-desktop.xml" "${XFCONF_DIR}/xfce4-desktop.xml"
+
+# Tema y fuentes.
+sembrar "${SEMILLA}/xsettings.xml" "${XFCONF_DIR}/xsettings.xml"
+sembrar "${SEMILLA}/gtk-settings.ini" "${XDG_CONFIG_HOME}/gtk-3.0/settings.ini"
+
+# Accesos directos en el escritorio. xfdesktop muestra lo que haya en ~/Desktop.
+install -d -m 0755 "${HOME}/Desktop"
+for lanzador in xfce4-terminal firefox; do
+    origen="/usr/share/applications/${lanzador}.desktop"
+    destino="${HOME}/Desktop/${lanzador}.desktop"
+    if [ -r "$origen" ] && [ ! -e "$destino" ]; then
+        cp "$origen" "$destino"
+        chmod 0755 "$destino"
+    fi
+done
+
+# Y un acceso al workspace, que es donde vive el trabajo del alumno y lo
+# primero que busca quien entra por el escritorio.
+[ -e "${HOME}/Desktop/workspace" ] || ln -sfn /workspace "${HOME}/Desktop/workspace"
+
+esperar_x() {
+    local intentos=0
+    while [ "$intentos" -lt 60 ]; do
+        if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        intentos=$(( intentos + 1 ))
+    done
+    return 1
+}
+
+if ! esperar_x; then
+    printf 'El servidor X no respondió en %s tras 60 segundos.\n' "$DISPLAY" >&2
+    exit 1
+fi
+
+# `--exit-with-session` hace que el bus muera con la sesión: sin eso quedan
+# procesos dbus huérfanos en cada reinicio de la sesión.
+exec dbus-launch --exit-with-session xfce4-session

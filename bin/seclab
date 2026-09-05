@@ -1,0 +1,2559 @@
+#!/usr/bin/env bash
+# =============================================================================
+# SecLab — interfaz de línea de comandos
+# =============================================================================
+# Fases 1 a 8: estructura, seguridad, imagen `lite`, ciclo de vida local,
+# diagnóstico, copias de seguridad, experiencia de terminal, CLI guiada de
+# labs, VPN autorizada multiperfil y publicación firmada con SBOM/provenance.
+# Los comandos aún no implementados dicen en qué fase llegan y salen con
+# código 3, en lugar de fingir que funcionan.
+# =============================================================================
+
+set -euo pipefail
+
+SECLAB_RAIZ="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly SECLAB_RAIZ
+
+# shellcheck source=../lib/comun.sh
+. "${SECLAB_RAIZ}/lib/comun.sh"
+# shellcheck source=../lib/plataforma.sh
+. "${SECLAB_RAIZ}/lib/plataforma.sh"
+# shellcheck source=../lib/docker.sh
+. "${SECLAB_RAIZ}/lib/docker.sh"
+# shellcheck source=../lib/secretos.sh
+. "${SECLAB_RAIZ}/lib/secretos.sh"
+# shellcheck source=../lib/backup.sh
+. "${SECLAB_RAIZ}/lib/backup.sh"
+# shellcheck source=../lib/labs.sh
+. "${SECLAB_RAIZ}/lib/labs.sh"
+# shellcheck source=../lib/vpn.sh
+. "${SECLAB_RAIZ}/lib/vpn.sh"
+
+if [ -r "${SECLAB_RAIZ}/VERSION" ]; then
+    SECLAB_VERSION="$(tr -d '[:space:]' < "${SECLAB_RAIZ}/VERSION")"
+else
+    SECLAB_VERSION="desconocida"
+fi
+readonly SECLAB_VERSION
+readonly ARCHIVO_ENV="${SECLAB_RAIZ}/.env"
+
+# -----------------------------------------------------------------------------
+# Utilidades internas
+# -----------------------------------------------------------------------------
+
+commit_corto() {
+    if [ -d "${SECLAB_RAIZ}/.git" ] && existe_comando git; then
+        git -C "$SECLAB_RAIZ" rev-parse --short HEAD 2>/dev/null || printf 'local'
+    else
+        printf 'local'
+    fi
+}
+
+# etiqueta_imagen_de PERFIL [VERSION]
+#
+# La versión es un parámetro y no siempre $SECLAB_VERSION porque `seclab update`
+# la necesita **después** de traer la versión nueva: el CLI en ejecución leyó su
+# VERSION al arrancar, y usarla ahí etiquetaba la imagen nueva con el número
+# viejo.
+etiqueta_imagen_de() {
+    printf 'seclab-%s:%s-%s' "$1" "${2:-$SECLAB_VERSION}" "$(commit_corto)"
+}
+
+perfil_actual() {
+    local p
+    p="$(leer_variable "$ARCHIVO_ENV" SECLAB_PERFIL)"
+    printf '%s' "${p:-lite}"
+}
+
+exigir_env() {
+    if [ ! -f "$ARCHIVO_ENV" ]; then
+        abortar "No existe .env: SecLab todavía no está inicializado." \
+                "Ningún comando del ciclo de vida puede funcionar sin él." \
+                "Ejecuta 'seclab init'."
+    fi
+}
+
+validar_perfil() {
+    local perfil="$1"
+    case " $(perfiles_validos) " in
+        *" $perfil "*) return 0 ;;
+        *) abortar "Perfil desconocido: ${perfil}" \
+                   "No se ha hecho nada." \
+                   "Perfiles válidos: $(perfiles_validos)." ;;
+    esac
+}
+
+# url_servicio VARIABLE_PUERTO POR_DEFECTO [RUTA]
+url_servicio() {
+    local puerto bind
+    puerto="$(leer_variable "$ARCHIVO_ENV" "$1")"
+    bind="$(leer_variable "$ARCHIVO_ENV" SECLAB_BIND)"
+    printf 'http://%s:%s%s' "${bind:-127.0.0.1}" "${puerto:-$2}" "${3:-/}"
+}
+
+# Muestra únicamente los accesos que existen de verdad: los servicios los
+# declara el propio contenedor al arrancar (ver servicios_activos), así que aquí
+# no se adivina nada a partir del perfil.
+mostrar_accesos() {
+    local perfil="$1" puerto_ssh usuario llave servicios
+    puerto_ssh="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_SSH)"
+    usuario="$(leer_variable "$ARCHIVO_ENV" SECLAB_USUARIO)"
+    llave="$(leer_variable "$ARCHIVO_ENV" SECLAB_SSH_LLAVE)"
+    servicios="$(servicios_activos)"
+
+    titulo "Accesos disponibles"
+    printf '  %s\n' "${C_NEGRITA}Shell${C_FIN}       seclab shell"
+    # La ruta va entrecomillada: el repositorio puede vivir en un directorio con
+    # espacios (Google Drive, OneDrive, "Mis documentos") y el comando sugerido
+    # tiene que poder copiarse y pegarse tal cual.
+    printf '  %s\n' "${C_NEGRITA}SSH${C_FIN}         ssh -i \"${llave:-<tu llave>}\" -p ${puerto_ssh:-2222} ${usuario:-seclab}@127.0.0.1"
+
+    if printf '%s\n' "$servicios" | grep -qx web; then
+        printf '  %s\n' "${C_NEGRITA}Bienvenida${C_FIN}  $(url_servicio SECLAB_PUERTO_WEB 8080)  ${C_GRIS}(seclab open)${C_FIN}"
+    fi
+    if printf '%s\n' "$servicios" | grep -qx escritorio; then
+        printf '  %s\n' "${C_NEGRITA}Escritorio${C_FIN}  $(url_servicio SECLAB_PUERTO_NOVNC 6080 /vnc.html)"
+    fi
+    if printf '%s\n' "$servicios" | grep -qx code; then
+        printf '  %s\n' "${C_NEGRITA}code-server${C_FIN} $(url_servicio SECLAB_PUERTO_CODE 8443)"
+    fi
+    printf '\n' >&2
+
+    if printf '%s\n' "$servicios" | grep -qxE 'escritorio|code'; then
+        detalle "Las contraseñas del escritorio y de code-server están en .env."
+        detalle "No se imprimen aquí a propósito: esta salida acaba en capturas y proyectores."
+    else
+        case "$perfil" in
+            lite) detalle "El escritorio web y code-server llegan con el perfil 'desktop': seclab start --profile desktop" ;;
+            *)    detalle "Ningún servicio web activo. Revísalo con 'seclab status'." ;;
+        esac
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Ayuda
+# -----------------------------------------------------------------------------
+mostrar_ayuda() {
+    cat >&2 <<AYUDA
+${C_NEGRITA}SecLab ${SECLAB_VERSION}${C_FIN} — laboratorio de ciberseguridad reproducible
+
+${C_NEGRITA}USO${C_FIN}
+  seclab <comando> [opciones]
+
+${C_NEGRITA}CICLO DE VIDA${C_FIN}
+  init [--profile PERFIL]   Prepara la máquina, genera secretos y arranca
+  start [--profile PERFIL]  Arranca el laboratorio
+  stop                      Detiene el laboratorio (conserva los datos)
+  restart                   Reinicia el laboratorio
+  status                    Estado, perfil, salud y accesos
+  doctor [--sin-preguntas]  Diagnóstico del entorno con acciones concretas
+  shell                     Abre una shell dentro del laboratorio
+  open                      Abre la página de bienvenida en el navegador
+  logs [PATRÓN] [--seguir]  Registros del laboratorio y de sus servicios
+  escritorio restablecer    Devuelve la barra y la terminal a la config. del curso
+  limpiar [--con-imagen]    Borra contenedor, red y volúmenes (conserva tus datos)
+
+${C_NEGRITA}LABORATORIOS${C_FIN}
+  lab create NOMBRE [--vpn P]  Crea un lab con su ficha y su estructura
+  lab list                  Labs existentes, con su perfil de VPN
+  lab reset NOMBRE          Vuelve al estado inicial, archivando lo anterior
+  shell --lab NOMBRE        Shell dentro del lab indicado
+
+${C_NEGRITA}VPN${C_FIN}
+  vpn list                  Perfiles conocidos: .ovpn, perfil.env y cuáles están activos
+  vpn up PERFIL             Levanta un perfil (vpnhtb, vpntry, vpncli); pueden estar los tres a la vez
+  vpn status                Perfiles activos, interfaz, IP, rangos y estado de cada túnel
+  vpn routes                Rutas activas hacia los túneles ahora mismo
+  vpn logs PERFIL           Registro de OpenVPN de ese perfil
+  vpn down [PERFIL]         Baja ese perfil, o todos los activos si se omite
+
+${C_NEGRITA}MANTENIMIENTO${C_FIN}
+  update [--stash]          Trae la versión nueva del curso y reconstruye
+
+${C_NEGRITA}COPIAS DE SEGURIDAD${C_FIN}
+  backup [--sin-workspace]  Copia .env, secretos, vpn, workspace y el home
+  backup verify [ARCHIVO]   Verifica una copia (por defecto, la más reciente)
+  backup list               Copias disponibles
+  restore ARCHIVO           Restaura sobre esta instalación (pide confirmación)
+  restore ARCHIVO --destino D  Extrae en D sin tocar tu instalación
+
+${C_NEGRITA}IMÁGENES${C_FIN}
+  image build [--profile P] Construye la imagen de un perfil
+  image info                Metadatos y manifiesto de la imagen actual
+  image publish [--profile P]  Construye, comprueba y publica (registry en SECLAB_REGISTRY)
+  image verify [--imagen REF]  Verifica la firma Cosign keyless de una imagen publicada
+
+${C_NEGRITA}SEGURIDAD${C_FIN}
+  seguridad                 Revisa secretos, permisos y exposición de servicios
+
+${C_NEGRITA}TODAVÍA NO IMPLEMENTADOS${C_FIN}                        ${C_GRIS}fase${C_FIN}
+  mcp ...                   Servidor MCP para agentes de IA               ${C_GRIS}13${C_FIN}
+  cloud ...                 Despliegue en la nube, a cargo del alumno     ${C_GRIS}10${C_FIN}
+
+${C_NEGRITA}OPCIONES DE init${C_FIN}
+  --profile PERFIL          lite | desktop | full | full-msf
+  --regenerar-secretos      Genera secretos nuevos aunque .env ya los tenga
+  --sin-arrancar            Prepara todo pero no levanta el contenedor
+
+${C_NEGRITA}DENTRO DEL LABORATORIO${C_FIN}
+  herramientas              Qué hay instalado, por categorías y con ejemplos
+  herramientas <nombre>     Para qué sirve una herramienta y cómo se usa
+
+${C_NEGRITA}MÁS INFORMACIÓN${C_FIN}
+  docs/inicio-rapido.md     Puesta en marcha
+  docs/backup.md            Copias de seguridad y restauración
+  docs/vpn.md               VPN multiperfil: vpnhtb, vpntry, vpncli
+  docs/uso-autorizado.md    Alcance, responsabilidad y reglas de uso
+AYUDA
+}
+
+# -----------------------------------------------------------------------------
+# Comprobaciones de doctor nacidas de fallos reales del aula
+# -----------------------------------------------------------------------------
+# Las tres siguientes no detectan problemas del entorno, sino situaciones que
+# aparecen al usar SecLab durante un curso y que, sin ayuda, el alumno resuelve
+# mal o no resuelve.
+
+# --- 1. Llave de host obsoleta en known_hosts -------------------------------
+# Al recrear el laboratorio o borrar su volumen, las llaves de host se
+# regeneran y el cliente SSH muestra el aviso en mayúsculas de posible
+# suplantación. Es un aviso correcto, pero aquí la causa es conocida y el
+# alumno no tiene forma de distinguirlo de un ataque.
+#
+# Que lo resuelva la herramienta importa: un alumno que aprenda a ignorar los
+# avisos de cambio de llave de SSH ha aprendido justo lo contrario de lo que se
+# pretende enseñar. Se compara la huella guardada con la real y se da la orden
+# exacta.
+huellas_known_hosts() {
+    ssh-keygen -l -F "$1" 2>/dev/null | grep -o 'SHA256:[A-Za-z0-9+/=]*' || true
+}
+
+huellas_host_contenedor() {
+    local id usuario
+    id="$(id_contenedor)"
+    [ -z "$id" ] && return 0
+    usuario="$(leer_variable "$ARCHIVO_ENV" SECLAB_USUARIO)"
+    usuario="${usuario:-seclab}"
+    docker exec "$id" sh -c \
+        "for f in /home/${usuario}/.seclab/ssh/*_key.pub; do [ -f \"\$f\" ] && ssh-keygen -lf \"\$f\"; done" \
+        2>/dev/null | grep -o 'SHA256:[A-Za-z0-9+/=]*' || true
+}
+
+comprobar_known_hosts() {
+    local puerto destino guardadas reales huella
+    puerto="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_SSH)"
+    puerto="${puerto:-2222}"
+    destino="[127.0.0.1]:${puerto}"
+
+    if ! existe_comando ssh-keygen; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "Sin ssh-keygen en el host: no se puede comprobar known_hosts" >&2
+        return 0
+    fi
+
+    guardadas="$(huellas_known_hosts "$destino")"
+    if [ -z "$guardadas" ]; then
+        printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "Sin entradas previas para ${destino}" >&2
+        detalle "La primera conexión te pedirá confirmar la huella. Eso es lo normal."
+        return 0
+    fi
+
+    if [ "$(estado_contenedor)" != "running" ]; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "Hay entradas para ${destino}, pero el laboratorio está parado" >&2
+        detalle "Se comparan con las llaves reales cuando esté en marcha."
+        return 0
+    fi
+
+    reales="$(huellas_host_contenedor)"
+    if [ -z "$reales" ]; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "No se han podido leer las llaves de host del contenedor" >&2
+        return 0
+    fi
+
+    for huella in $guardadas; do
+        if printf '%s\n' "$reales" | grep -Fqx "$huella"; then
+            printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "La llave guardada para ${destino} es la del laboratorio" >&2
+            return 0
+        fi
+    done
+
+    aviso "La llave de host guardada para ${destino} ya no es la del laboratorio."
+    detalle "Tu cliente SSH avisará de una posible suplantación. Aquí la causa es"
+    detalle "conocida: el volumen del laboratorio se recreó y las llaves son nuevas."
+    detalle "Borra la entrada obsoleta con esta orden exacta:"
+    printf '\n    ssh-keygen -R %s\n\n' "'${destino}'" >&2
+    detalle "No añadas la nueva llave a mano ni desactives StrictHostKeyChecking:"
+    detalle "ese aviso es una de las pocas defensas reales que tiene SSH."
+    return 1
+}
+
+# --- 2. Volumen del directorio personal de otra imagen base ------------------
+# Los volúmenes nombrados sobreviven a la reconstrucción de la imagen. Al
+# cambiar de base, el directorio personal conserva los restos de la anterior
+# —punto de partida del fallo real que dejaba un .bashrc de Kali en un
+# laboratorio Ubuntu—.
+comprobar_volumen_home() {
+    local vol marca esperado
+    vol="$(volumen_home)"
+
+    if ! volumen_existe "$vol"; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "El volumen ${vol} todavía no existe" >&2
+        return 0
+    fi
+
+    marca="$(marca_base_home)"
+    esperado="$(digest_base_dockerfile)"
+
+    if [ -z "$marca" ] || [ "$marca" = "desconocido" ]; then
+        aviso "El volumen ${vol} no registra con qué imagen base se creó."
+        detalle "Lo crearon versiones de SecLab anteriores a la Fase 3, que no dejaban marca."
+        detalle "No se puede afirmar que esté limpio. Si ves configuración que no reconoces"
+        detalle "en el directorio personal, recréalo con 'seclab limpiar'."
+        return 1
+    fi
+
+    if [ "$marca" = "$esperado" ]; then
+        printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "El volumen ${vol} corresponde a la imagen base actual" >&2
+        return 0
+    fi
+
+    aviso "El volumen ${vol} se creó sobre otra imagen base."
+    detalle "Creado con:  ${marca}"
+    detalle "Base actual: ${esperado}"
+    detalle "El directorio personal puede conservar configuración de la base anterior."
+    detalle "Tu workspace NO está en este volumen: recrearlo no afecta a tu trabajo."
+    detalle "Sí se regenerarán las llaves de host SSH, y tu cliente avisará del cambio."
+
+    if [ "${SECLAB_DOCTOR_PREGUNTAR:-si}" = "si" ] && [ -t 0 ]; then
+        printf '\n' >&2
+        if confirmar "¿Recrear el volumen ${vol} ahora?"; then
+            recrear_volumen_home || return 1
+            return 0
+        fi
+        info "No se ha tocado el volumen."
+    fi
+    detalle "Cuando quieras hacerlo: seclab limpiar"
+    return 1
+}
+
+recrear_volumen_home() {
+    local vol puerto
+    vol="$(volumen_home)"
+    puerto="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_SSH)"
+    puerto="${puerto:-2222}"
+
+    if [ "$(estado_contenedor)" != "ausente" ]; then
+        info "Deteniendo el laboratorio para poder liberar el volumen"
+        compose_seclab down >/dev/null 2>&1 || true
+    fi
+
+    if ! docker volume rm "$vol" >/dev/null 2>&1; then
+        error "No se ha podido borrar el volumen ${vol}." \
+              "Sigue en uso o Docker no responde." \
+              "Ejecuta 'seclab stop' y vuelve a intentarlo."
+        return 1
+    fi
+
+    ok "Volumen ${vol} borrado; se recreará limpio en el próximo arranque"
+    detalle "Al arrancar tendrás llaves de host nuevas. Borra la entrada anterior con:"
+    printf '\n    ssh-keygen -R %s\n\n' "'[127.0.0.1]:${puerto}'" >&2
+    detalle "Arranca de nuevo con: seclab start"
+    return 0
+}
+
+# --- 3. Glifos de la barra de estado ----------------------------------------
+# La barra de tmux usa separadores Powerline, que sólo se ven con una Nerd Font
+# instalada en el terminal del host. Sin ella salen cuadros o interrogaciones y
+# el alumno concluye que algo está roto. Se pregunta directamente, porque esto
+# no se puede detectar desde aquí: depende de la fuente del terminal del alumno,
+# que está fuera del contenedor.
+comprobar_glifos() {
+    local actual
+    actual="$(leer_variable "$ARCHIVO_ENV" SECLAB_GLIFOS)"
+    actual="${actual:-powerline}"
+
+    if [ "$actual" = "ascii" ]; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "Variante ASCII activada: no se usan glifos Powerline" >&2
+        detalle "Para volver a los separadores: SECLAB_GLIFOS=powerline en .env y 'seclab restart'."
+        return 0
+    fi
+
+    if [ "${SECLAB_DOCTOR_PREGUNTAR:-si}" != "si" ] || [ ! -t 0 ]; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "Prueba de glifos omitida (necesita una terminal interactiva)" >&2
+        return 0
+    fi
+
+    printf '\n' >&2
+    # Los cuatro separadores Powerline, escritos por sus bytes UTF-8: bash 3.2
+    # (el de macOS) no entiende la forma \u de $'...', y este script tiene que
+    # funcionar también ahí.
+    local sep_izq sep_izq_sub sep_der sep_der_sub
+    sep_izq="$(printf '\356\202\260')"      # U+E0B0
+    sep_izq_sub="$(printf '\356\202\261')"  # U+E0B1
+    sep_der="$(printf '\356\202\262')"      # U+E0B2
+    sep_der_sub="$(printf '\356\202\263')"  # U+E0B3
+
+    printf '    %s\n' "  seclab ${sep_izq} 1:zsh ${sep_izq_sub} 2:nmap ${sep_der} 12:04 ${sep_der_sub} lab " >&2
+    printf '\n' >&2
+
+    if confirmar "¿Ves los cuatro separadores como flechas o triángulos, sin cuadros ni interrogaciones?"; then
+        printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "Glifos correctos" >&2
+        return 0
+    fi
+
+    aviso "Tu terminal no tiene una Nerd Font: los separadores no se ven."
+    detalle "Dos caminos, y el segundo no depende de instalar nada:"
+    detalle "1. Instala una Nerd Font en el terminal del host (docs/troubleshooting.md)."
+    detalle "2. Usa la variante ASCII de la barra de estado, que se ve bien en cualquier fuente."
+    printf '\n' >&2
+    if confirmar "¿Activar ahora la variante ASCII?"; then
+        escribir_variable "$ARCHIVO_ENV" SECLAB_GLIFOS ascii
+        ok "SECLAB_GLIFOS=ascii escrito en .env"
+        detalle "Se aplica al reiniciar: seclab restart"
+        detalle "Si habías editado tu ~/.tmux.conf.local, SecLab no lo sobrescribe;"
+        detalle "en ese caso te dirá al arrancar qué cuatro líneas cambiar."
+        return 0
+    fi
+    info "Se mantienen los glifos Powerline."
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# doctor
+# -----------------------------------------------------------------------------
+cmd_doctor() {
+    local perfil="" so arq bloqueantes=0 ram_docker ram_host disco tun est_docker
+    local req ram_min disco_min avisos=0
+
+    # La prueba de glifos y la oferta de recrear el volumen necesitan preguntar.
+    # Con --sin-preguntas, doctor es del todo no interactivo y sirve para la CI.
+    SECLAB_DOCTOR_PREGUNTAR=si
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --sin-preguntas) SECLAB_DOCTOR_PREGUNTAR=no; shift ;;
+            -*) abortar "Opción desconocida para 'doctor': $1" "" \
+                        "Uso: seclab doctor [PERFIL] [--sin-preguntas]" ;;
+            *) perfil="$1"; shift ;;
+        esac
+    done
+    [ -z "$perfil" ] && perfil="$(perfil_actual)"
+
+    so="$(detectar_so)"
+    arq="$(detectar_arquitectura)"
+
+    titulo "Entorno"
+    printf '  %-22s %s\n' "Sistema" "$(nombre_so "$so")" >&2
+    printf '  %-22s %s\n' "Arquitectura" "$arq" >&2
+    printf '  %-22s %s\n' "SecLab" "$SECLAB_VERSION ($(commit_corto))" >&2
+
+    if [ "$so" = "desconocido" ]; then
+        error "Sistema operativo no reconocido." \
+              "SecLab no puede garantizar su comportamiento aquí." \
+              "Usa macOS, Linux o Windows con WSL2. Ver docs/plataformas.md."
+        bloqueantes=$(( bloqueantes + 1 ))
+    fi
+    if [ "$arq" != "amd64" ] && [ "$arq" != "arm64" ]; then
+        error "Arquitectura no soportada: ${arq}" \
+              "No hay imágenes de SecLab para esta arquitectura." \
+              "SecLab publica amd64 y arm64."
+        bloqueantes=$(( bloqueantes + 1 ))
+    fi
+
+    titulo "Docker"
+    est_docker="$(estado_docker)"
+    if [ "$est_docker" = "ok" ]; then
+        printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "Docker y Compose responden" >&2
+    else
+        error "Docker no está utilizable (${est_docker})." \
+              "Nada del laboratorio puede arrancar." \
+              "$(accion_docker "$est_docker" "$so")"
+        bloqueantes=$(( bloqueantes + 1 ))
+    fi
+
+    titulo "Recursos para el perfil '${perfil}'"
+    req="$(requisitos_perfil "$perfil")"
+    if [ -z "$req" ]; then
+        error "Perfil desconocido: ${perfil}" "" "Perfiles válidos: $(perfiles_validos)."
+        return 1
+    fi
+    ram_min="$(printf '%s' "$req" | cut -d' ' -f1)"
+    disco_min="$(printf '%s' "$req" | cut -d' ' -f2)"
+
+    ram_host="$(ram_host_gb)"
+    disco="$(disco_libre_gb "$SECLAB_RAIZ")"
+
+    if [ "$est_docker" = "ok" ]; then
+        ram_docker="$(ram_docker_gb)"
+        printf '  %-22s %s GB (mínimo %s GB)\n' "RAM para contenedores" "$ram_docker" "$ram_min" >&2
+        if [ "$so" != "linux" ]; then
+            detalle "La máquina tiene ${ram_host} GB, pero el contenedor sólo puede usar lo que"
+            detalle "tenga asignado la VM de Docker. Esa es la cifra que cuenta."
+        fi
+        if [ "$ram_docker" -lt "$ram_min" ]; then
+            local sugerido
+            sugerido="$(perfil_recomendado "$ram_docker")"
+            if [ -n "$sugerido" ]; then
+                error "El perfil '${perfil}' necesita ${ram_min} GB y sólo hay ${ram_docker} GB." \
+                      "El contenedor moriría por falta de memoria en mitad de una práctica." \
+                      "Usa el perfil '${sugerido}', que sí cabe: seclab init --profile ${sugerido}"
+            else
+                error "El perfil '${perfil}' necesita ${ram_min} GB y sólo hay ${ram_docker} GB." \
+                      "Ningún perfil de SecLab cabe en esta configuración." \
+                      "$([ "$so" = "linux" ] && printf 'Necesitas una máquina con más memoria.' || printf 'Sube la memoria asignada a Docker en sus preferencias.')"
+            fi
+            bloqueantes=$(( bloqueantes + 1 ))
+        else
+            printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "Memoria suficiente" >&2
+        fi
+    fi
+
+    printf '  %-22s %s GB (mínimo %s GB)\n' "Disco libre" "$disco" "$disco_min" >&2
+    if [ "$disco" -lt "$disco_min" ]; then
+        error "Faltan al menos $(( disco_min - disco )) GB de disco para el perfil '${perfil}'." \
+              "La construcción o la descarga de la imagen fallará a medias." \
+              "Libera espacio, o prueba 'docker system prune -a' si tienes imágenes viejas."
+        bloqueantes=$(( bloqueantes + 1 ))
+    fi
+    [ "$so" != "linux" ] && detalle "En $(nombre_so "$so") las imágenes viven dentro de la VM de Docker, que tiene su propio disco."
+
+    titulo "Red"
+    tun="$(estado_tun "$so")"
+    case "$tun" in
+        disponible) printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "/dev/net/tun disponible (necesario para la VPN)" >&2 ;;
+        en-vm)      printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "/dev/net/tun vive dentro de la VM de Docker; se comprueba de verdad al levantar un perfil de VPN" >&2 ;;
+        ausente)
+            aviso "/dev/net/tun no está disponible."
+            detalle "No bloquea el laboratorio, pero ningún perfil de VPN funcionará."
+            detalle "Solución: $(accion_tun "$so")"
+            ;;
+    esac
+
+    # Perfiles de VPN activos, si los hay: se consulta al contenedor
+    # (docker exec ... seclab-vpn activos), nunca .env — con el diseño de la
+    # Fase 7 la VPN vive dentro de 'lab' y pueden estar activos varios
+    # perfiles a la vez.
+    if [ "$(estado_contenedor)" = "running" ]; then
+        local vpn_activos
+        vpn_activos="$(vpn_perfiles_activos)"
+        if [ -n "$vpn_activos" ]; then
+            local p id
+            id="$(id_contenedor)"
+            while IFS= read -r p; do
+                [ -n "$p" ] || continue
+                if docker exec "$id" test -f "/run/seclab-vpn/${p}/arriba" 2>/dev/null; then
+                    printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "VPN '${p}' arriba" >&2
+                else
+                    aviso "VPN '${p}' con proceso en marcha pero túnel caído (killswitch activo)."
+                    detalle "Detalle: seclab vpn status"
+                    avisos=$(( avisos + 1 ))
+                fi
+            done <<< "$vpn_activos"
+        else
+            printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "Ninguna VPN activa" >&2
+        fi
+    else
+        detalle "El laboratorio no está en marcha; no se puede comprobar el estado de la VPN."
+    fi
+
+    # Conflicto con Tailscale por la ruta por defecto (prompt_v3.md, sección
+    # "Acceso remoto"): Tailscale todavía no existe en este repositorio
+    # (llega, opcional, en la Fase 9). No hay nada que detectar todavía; se dice
+    # así en vez de fingir una comprobación sin nada que comprobar.
+    detalle "Tailscale (Fase 9, opcional) todavía no está implementado: sin conflicto de rutas que detectar."
+
+    local puerto ocupados=""
+    for puerto in $(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_SSH); do
+        [ -z "$puerto" ] && continue
+        puerto_libre "$puerto" || ocupados="${ocupados} ${puerto}"
+    done
+    if [ -n "$ocupados" ]; then
+        aviso "Puertos ya ocupados en 127.0.0.1:${ocupados}"
+        detalle "Si es otra instancia de SecLab, no pasa nada: cambia SECLAB_PUERTO_SSH en .env."
+    else
+        printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "Puertos configurados libres" >&2
+    fi
+
+    titulo "Estado del laboratorio"
+    if [ ! -f "$ARCHIVO_ENV" ]; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "Sin inicializar. Ejecuta 'seclab init'." >&2
+    else
+        local imagen
+        imagen="$(leer_variable "$ARCHIVO_ENV" SECLAB_IMAGE)"
+        printf '  %-22s %s\n' "Perfil configurado" "$(perfil_actual)" >&2
+        if imagen_existe "$imagen" && ! imagen_al_dia "$imagen"; then
+            printf '  %-22s %s\n' "Imagen" "${imagen} ${C_AMARILLO}(base desactualizada)${C_FIN}" >&2
+            detalle "Se construyó con otra imagen base. Reconstruye con 'seclab image build'."
+        elif imagen_existe "$imagen"; then
+            printf '  %-22s %s\n' "Imagen" "${imagen} ${C_VERDE}(presente)${C_FIN}" >&2
+        else
+            printf '  %-22s %s\n' "Imagen" "${imagen} ${C_AMARILLO}(no construida)${C_FIN}" >&2
+        fi
+        printf '  %-22s %s\n' "Contenedor" "$(estado_contenedor)" >&2
+    fi
+
+    # Las tres comprobaciones de la Fase 3 sólo tienen sentido con .env: todas
+    # miran el estado de una instalación concreta, no del entorno.
+    if [ -f "$ARCHIVO_ENV" ] && [ "$est_docker" = "ok" ]; then
+        titulo "Llave de host SSH"
+        comprobar_known_hosts || avisos=$(( avisos + 1 ))
+
+        titulo "Volumen del directorio personal"
+        comprobar_volumen_home || avisos=$(( avisos + 1 ))
+
+        titulo "Glifos de la barra de estado"
+        comprobar_glifos || avisos=$(( avisos + 1 ))
+    fi
+
+    printf '\n' >&2
+    if [ "$bloqueantes" -gt 0 ]; then
+        printf '%s\n\n' "${C_ROJO}${bloqueantes} problema(s) bloqueante(s).${C_FIN} Resuélvelos antes de continuar." >&2
+        return 1
+    fi
+    if [ "$avisos" -gt 0 ]; then
+        printf '%s\n\n' "${C_VERDE}Entorno apto${C_FIN} para el perfil '${perfil}', con ${avisos} aviso(s) arriba." >&2
+        return 0
+    fi
+    printf '%s\n\n' "${C_VERDE}Entorno apto${C_FIN} para el perfil '${perfil}'." >&2
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# init
+# -----------------------------------------------------------------------------
+cmd_init() {
+    local perfil="" regenerar=false arrancar=true pedido_explicito=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --profile|--perfil) perfil="${2:-}"; pedido_explicito=true; shift 2 ;;
+            --regenerar-secretos) regenerar=true; shift ;;
+            --sin-arrancar) arrancar=false; shift ;;
+            *) abortar "Opción desconocida de init: $1" "" "Ejecuta 'seclab ayuda'." ;;
+        esac
+    done
+
+    titulo "SecLab ${SECLAB_VERSION} — inicialización"
+
+    # --- 1. Perfil ----------------------------------------------------------
+    if [ -z "$perfil" ]; then
+        perfil="$(leer_variable "$ARCHIVO_ENV" SECLAB_PERFIL)"
+    fi
+    if [ -z "$perfil" ]; then
+        if [ "$(estado_docker)" = "ok" ]; then
+            perfil="$(perfil_recomendado "$(ram_docker_gb)")"
+        fi
+        [ -z "$perfil" ] && perfil="lite"
+        info "Perfil recomendado para esta máquina: ${C_NEGRITA}${perfil}${C_FIN}"
+    fi
+    validar_perfil "$perfil"
+
+    # Sólo `lite` tiene etapa en el Dockerfile hoy.
+    #
+    # Si el alumno lo pidió a propósito, se le dice que no: cambiarle el perfil
+    # por debajo sería peor que negarse, porque acabaría trabajando en algo
+    # distinto de lo que pidió sin darse cuenta. Si el perfil sólo venía de
+    # nuestra recomendación, se ajusta y se avisa.
+    if ! perfil_implementado "$perfil"; then
+        if [ "$pedido_explicito" = true ]; then
+            abortar "El perfil '${perfil}' está diseñado pero todavía no construido." \
+                    "No se ha modificado nada en tu instalación." \
+                    "Hoy sólo está implementado: $(perfiles_implementados). Llega en la Fase 5."
+        fi
+        aviso "El perfil recomendado ('${perfil}') aún no está construido; llega en la Fase 5."
+        detalle "Se usará 'lite', que sí está disponible."
+        perfil="lite"
+    fi
+
+    # --- 2. Entorno ---------------------------------------------------------
+    # El diagnóstico manda: si la máquina no da, no se sigue.
+    #
+    # Sin preguntas: init no es el momento de preguntar por los glifos de la
+    # barra de estado ni de ofrecer recrear un volumen. Eso se hace ejecutando
+    # 'seclab doctor' a mano, cuando el laboratorio ya está en marcha.
+    if ! cmd_doctor "$perfil" --sin-preguntas; then
+        abortar "El entorno no cumple los requisitos del perfil '${perfil}'." \
+                "No se ha modificado nada en tu instalación." \
+                "Resuelve lo anterior y vuelve a ejecutar 'seclab init'."
+    fi
+
+    # --- 3. .env ------------------------------------------------------------
+    titulo "Configuración"
+    if [ -f "$ARCHIVO_ENV" ]; then
+        ok ".env ya existe; se conserva tal cual"
+        detalle "init nunca sobrescribe tu configuración."
+    else
+        cp "${SECLAB_RAIZ}/.env.example" "$ARCHIVO_ENV"
+        chmod 600 "$ARCHIVO_ENV"
+        ok ".env creado a partir de la plantilla"
+    fi
+    chmod 600 "$ARCHIVO_ENV"
+
+    escribir_variable "$ARCHIVO_ENV" SECLAB_PERFIL "$perfil"
+    escribir_variable "$ARCHIVO_ENV" SECLAB_IMAGE "$(etiqueta_imagen_de "$perfil")"
+    escribir_variable "$ARCHIVO_ENV" SECLAB_VERSION "$SECLAB_VERSION"
+    escribir_variable "$ARCHIVO_ENV" SECLAB_COMMIT "$(commit_corto)"
+
+    # --- 4. Secretos --------------------------------------------------------
+    local clave valor generados=0
+    for clave in SECLAB_VNC_PASSWORD SECLAB_CODE_PASSWORD SECLAB_JUPYTER_TOKEN SECLAB_MCP_TOKEN; do
+        valor="$(leer_variable "$ARCHIVO_ENV" "$clave")"
+        if [ "$regenerar" = true ] || es_secreto_inseguro "$valor"; then
+            escribir_variable "$ARCHIVO_ENV" "$clave" "$(generar_secreto 32)"
+            generados=$(( generados + 1 ))
+        fi
+    done
+    if [ "$generados" -gt 0 ]; then
+        ok "${generados} secreto(s) generados"
+        detalle "No se imprimen aquí. Están en .env, con permisos 600."
+    else
+        ok "Los secretos existentes son válidos; no se tocan"
+    fi
+
+    # --- 5. Llave SSH -------------------------------------------------------
+    local llave
+    llave="$(localizar_llave_ssh)"
+    escribir_variable "$ARCHIVO_ENV" SECLAB_SSH_LLAVE "$llave"
+    escribir_variable "$ARCHIVO_ENV" SECLAB_SSH_PUBKEY "$(cat "${llave}.pub")"
+    ok "Llave SSH: ${llave}"
+
+    # --- 6. Workspace y VPN -------------------------------------------------
+    titulo "Directorios"
+    install -d -m 0700 "${SECLAB_RAIZ}/workspace"
+    ok "workspace/"
+
+    install -d -m 0700 "${SECLAB_RAIZ}/vpn"
+    local pv
+    for pv in vpnhtb vpntry vpncli; do
+        install -d -m 0700 "${SECLAB_RAIZ}/vpn/${pv}"
+        local origen destino
+        for origen in "${SECLAB_RAIZ}/templates/vpn/${pv}/"*; do
+            [ -f "$origen" ] || continue
+            destino="${SECLAB_RAIZ}/vpn/${pv}/$(basename "$origen")"
+            if [ ! -e "$destino" ]; then
+                cp "$origen" "$destino"
+                chmod 600 "$destino"
+            fi
+        done
+    done
+    ok "vpn/vpnhtb, vpn/vpntry, vpn/vpncli (plantillas copiadas, sin sobrescribir)"
+    detalle "Coloca ahí tu .ovpn y activa el perfil con: seclab vpn up <perfil>. Nada de vpn/ entra en Git."
+
+    install -d -m 0700 "${SECLAB_RAIZ}/backups"
+    ok "backups/ (destino de 'seclab backup'; tampoco entra en Git)"
+
+    # --- 7. Imagen ----------------------------------------------------------
+    local imagen
+    imagen="$(etiqueta_imagen_de "$perfil")"
+    titulo "Imagen"
+    if imagen_existe "$imagen" && ! imagen_al_dia "$imagen"; then
+        aviso "La imagen ${imagen} se construyó con otra imagen base."
+        detalle "La etiqueta coincide, pero el contenido no corresponde al Dockerfile actual."
+        detalle "Se reconstruye: si no, seguirías trabajando sobre la base antigua sin saberlo."
+        construir_imagen "$perfil"
+    elif imagen_existe "$imagen"; then
+        ok "${imagen} ya está disponible"
+    else
+        info "Construyendo ${imagen} (la primera vez tarda unos minutos)"
+        detalle "La ruta principal será descargar la imagen firmada del curso (Fase 8)."
+        construir_imagen "$perfil"
+    fi
+
+    # --- 8. Arranque --------------------------------------------------------
+    if [ "$arrancar" = false ]; then
+        titulo "Listo"
+        info "Preparado sin arrancar, como pediste. Cuando quieras: seclab start"
+        return 0
+    fi
+
+    cmd_start
+}
+
+# -----------------------------------------------------------------------------
+# image
+# -----------------------------------------------------------------------------
+construir_imagen() {
+    local perfil="$1" imagen
+    imagen="$(etiqueta_imagen_de "$perfil" "${2:-$SECLAB_VERSION}")"
+
+    docker build \
+        --file "${SECLAB_RAIZ}/docker/Dockerfile" \
+        --target "$perfil" \
+        --tag "$imagen" \
+        --build-arg "SECLAB_VERSION=${2:-$SECLAB_VERSION}" \
+        --build-arg "SECLAB_COMMIT=$(commit_corto)" \
+        --build-arg "SECLAB_FECHA=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$SECLAB_RAIZ"
+
+    ok "Imagen construida: ${imagen}"
+}
+
+cmd_image() {
+    local sub="${1:-}"; shift || true
+    case "$sub" in
+        build)
+            local perfil=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --profile|--perfil) perfil="${2:-}"; shift 2 ;;
+                    *) abortar "Opción desconocida: $1" "" "Uso: seclab image build [--profile PERFIL]" ;;
+                esac
+            done
+            [ -z "$perfil" ] && perfil="$(perfil_actual)"
+            validar_perfil "$perfil"
+            if ! perfil_implementado "$perfil"; then
+                abortar "El perfil '${perfil}' todavía no tiene etapa en el Dockerfile." \
+                        "No hay nada que construir." \
+                        "Hoy sólo está implementado: $(perfiles_implementados). El resto llega en la Fase 5."
+            fi
+            construir_imagen "$perfil"
+            ;;
+        info)
+            exigir_env
+            local imagen
+            imagen="$(leer_variable "$ARCHIVO_ENV" SECLAB_IMAGE)"
+            if ! imagen_existe "$imagen"; then
+                abortar "La imagen ${imagen} no está construida." "" "Ejecuta 'seclab image build'."
+            fi
+            titulo "Imagen ${imagen}"
+            local etiqueta
+            for etiqueta in dev.seclab.perfil dev.seclab.arquitectura \
+                            org.opencontainers.image.version \
+                            org.opencontainers.image.revision \
+                            org.opencontainers.image.created \
+                            org.opencontainers.image.base.digest; do
+                printf '  %-38s %s\n' "$etiqueta" "$(etiqueta_imagen "$imagen" "$etiqueta")" >&2
+            done
+            printf '\n' >&2
+            detalle "Manifiesto completo: seclab shell → cat /opt/seclab/manifiesto-herramientas.txt"
+            ;;
+        publish)
+            cmd_image_publish "$@"
+            ;;
+        verify)
+            cmd_image_verify "$@"
+            ;;
+        ""|*)
+            abortar "Subcomando de image no reconocido: ${sub:-(ninguno)}" "" \
+                    "Disponibles: build, info, publish, verify."
+            ;;
+    esac
+}
+
+# imagen_con_registro IMAGEN -> antepone SECLAB_REGISTRY si no lo lleva ya y
+# hay uno configurado. Sin registry configurado, se usa el registry local de
+# pruebas (localhost:5000, ver prompt_v3.md "Despliegue cloud"), tal como
+# documenta docs/ci.md.
+imagen_con_registro() {
+    local imagen="$1" registry
+    registry="$(leer_variable "$ARCHIVO_ENV" SECLAB_REGISTRY)"
+    registry="${registry:-localhost:5000}"
+    case "$imagen" in
+        "${registry}"/*) printf '%s' "$imagen" ;;
+        *) printf '%s/%s' "$registry" "$imagen" ;;
+    esac
+}
+
+# cmd_image_publish [--profile PERFIL]
+#
+# Requisito literal de prompt_v3.md, sección "CI/CD": "No publiques una
+# imagen si falla una herramienta requerida, un smoke test o una validación de
+# seguridad." Las tres comprobaciones se ejecutan de verdad aquí, en este
+# orden, y cualquier fallo aborta ANTES de tocar el registry.
+cmd_image_publish() {
+    local perfil=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --profile|--perfil) perfil="${2:-}"; shift 2 ;;
+            *) abortar "Opción desconocida: $1" "" "Uso: seclab image publish [--profile PERFIL]" ;;
+        esac
+    done
+    exigir_env
+    [ -z "$perfil" ] && perfil="$(perfil_actual)"
+    validar_perfil "$perfil"
+    if ! perfil_implementado "$perfil"; then
+        abortar "El perfil '${perfil}' todavía no tiene etapa en el Dockerfile." \
+                "No hay nada que publicar." \
+                "Hoy sólo está implementado: $(perfiles_implementados)."
+    fi
+
+    titulo "Publicación de '${perfil}' — comprobaciones obligatorias"
+
+    # --- 1. Manifiesto de herramientas -------------------------------------
+    # docker/generar-manifiesto.sh ya corta el build si un paquete declarado
+    # no queda instalado (ver prompt_v3.md, "Reproducibilidad y supply
+    # chain"). Aquí no se reinventa esa comprobación: simplemente no se
+    # publica nada si el build de la imagen a publicar falla.
+    local imagen
+    imagen="$(etiqueta_imagen_de "$perfil")"
+    if ! imagen_existe "$imagen" || ! imagen_al_dia "$imagen"; then
+        info "Construyendo ${imagen} antes de publicar (el build falla si falta una herramienta declarada)"
+        if ! construir_imagen "$perfil"; then
+            abortar "El build de '${perfil}' ha fallado." \
+                    "No se publica nada: el manifiesto de herramientas no se corresponde con la imagen." \
+                    "Revisa el error de arriba (docker/generar-manifiesto.sh o docker/verificar-capacidades.sh)."
+        fi
+    fi
+    ok "Manifiesto de herramientas verificado en el build de ${imagen}"
+
+    # --- 2. Validación de seguridad -----------------------------------------
+    if ! "${SECLAB_RAIZ}/scripts/verificar-seguridad.sh"; then
+        abortar "La revisión de seguridad de la configuración ha fallado." \
+                "No se publica nada con secretos débiles, permisos laxos o servicios expuestos." \
+                "Corrige lo señalado arriba (detalle completo: 'seclab seguridad') y repite la publicación."
+    fi
+    ok "Revisión de seguridad superada"
+
+    # --- 3. Smoke tests ------------------------------------------------------
+    # Los smoke tests corren contra un contenedor EN MARCHA con este perfil:
+    # no se puede publicar sin haberlo arrancado antes.
+    if [ "$(estado_contenedor)" != "running" ] || [ "$(perfil_actual)" != "$perfil" ]; then
+        abortar "El laboratorio no está arrancado con el perfil '${perfil}'." \
+                "No se puede publicar sin pasar antes los smoke tests contra un contenedor en marcha." \
+                "Arráncalo con 'seclab start --profile ${perfil}' y repite 'seclab image publish --profile ${perfil}'."
+    fi
+    if ! "${SECLAB_RAIZ}/scripts/smoke.sh" "$perfil"; then
+        abortar "Los smoke tests del perfil '${perfil}' han fallado." \
+                "No se publica una imagen cuyos servicios no responden como se espera." \
+                "Corrige lo señalado arriba y repite la publicación."
+    fi
+    ok "Smoke tests superados"
+
+    # --- 4. Publicación --------------------------------------------------------
+    local destino registry
+    registry="$(leer_variable "$ARCHIVO_ENV" SECLAB_REGISTRY)"
+    destino="$(imagen_con_registro "$imagen")"
+    titulo "Subiendo a ${destino}"
+    if [ -z "$registry" ]; then
+        detalle "SECLAB_REGISTRY está vacío: se usa el registry local de pruebas (localhost:5000)."
+        detalle "Para publicar de verdad, define SECLAB_REGISTRY en .env (ver docs/ci.md)."
+    fi
+    if ! docker tag "$imagen" "$destino"; then
+        abortar "No se ha podido etiquetar ${imagen} como ${destino}." "" "Revisa que la imagen exista: 'docker image ls'."
+    fi
+    if ! docker push "$destino"; then
+        abortar "No se ha podido subir ${destino}." \
+                "El registry no responde o rechaza la subida." \
+                "Para pruebas locales: 'docker run -d -p 5000:5000 --name registro-local registry:2'. En CI, revisa las credenciales del registry configurado."
+    fi
+    ok "Imagen publicada: ${destino}"
+    detalle "Firma, SBOM y provenance NO se generan aquí: son responsabilidad del pipeline de CI"
+    detalle "al taggear una versión (ver docs/ci.md). Este comando es también lo que ejecuta ese job."
+}
+
+# cmd_image_verify [--imagen REF]
+#
+# Comprueba la firma Cosign (keyless, OIDC de GitHub Actions) de una imagen
+# publicada. Nunca finge haber verificado algo: si cosign no está instalado,
+# falla con instrucciones, no con un "probablemente esté bien".
+cmd_image_verify() {
+    local imagen="" registry identidad emisor
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --imagen) imagen="${2:-}"; shift 2 ;;
+            *) abortar "Opción desconocida: $1" "" "Uso: seclab image verify [--imagen REF]" ;;
+        esac
+    done
+
+    if ! existe_comando cosign; then
+        abortar "cosign no está instalado en esta máquina." \
+                "No se puede verificar la firma de ninguna imagen sin él. SecLab no finge una verificación que no ha hecho." \
+                "Instálalo: https://docs.sigstore.dev/cosign/system_config/installation/ (macOS: 'brew install cosign')."
+    fi
+
+    exigir_env
+    if [ -z "$imagen" ]; then
+        imagen="$(leer_variable "$ARCHIVO_ENV" SECLAB_IMAGE)"
+        imagen="$(imagen_con_registro "$imagen")"
+    fi
+
+    identidad="$(leer_variable "$ARCHIVO_ENV" SECLAB_COSIGN_IDENTIDAD_REGEX)"
+    emisor="$(leer_variable "$ARCHIVO_ENV" SECLAB_COSIGN_EMISOR)"
+    emisor="${emisor:-https://token.actions.githubusercontent.com}"
+
+    if [ -z "$identidad" ]; then
+        abortar "Falta SECLAB_COSIGN_IDENTIDAD_REGEX en .env." \
+                "Sin ella, 'cosign verify' no sabe contra qué identidad de GitHub Actions comprobar la firma keyless; verificar sin identidad equivaldría a aceptar la firma de cualquiera." \
+                "Documentado en docs/ci.md: pon el regex del repositorio real del curso, por ejemplo '^https://github\\.com/TU-ORGANIZACION/TU-REPO/\\.github/workflows/.+@refs/tags/v.*\$'."
+    fi
+
+    titulo "Verificando firma de ${imagen}"
+    detalle "Política: keyless, emisor ${emisor}"
+    if cosign verify \
+        --certificate-identity-regexp "$identidad" \
+        --certificate-oidc-issuer "$emisor" \
+        "$imagen"
+    then
+        ok "Firma verificada: ${imagen} procede del pipeline de CI del curso."
+    else
+        abortar "La firma de ${imagen} no se ha podido verificar." \
+                "La imagen puede no venir del pipeline oficial del curso, no estar firmada, o el registry no la sirve." \
+                "No la uses sin confirmar el origen con el profesorado. Detalle del error de cosign arriba."
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# start / stop / restart
+# -----------------------------------------------------------------------------
+cmd_start() {
+    local perfil=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --profile|--perfil) perfil="${2:-}"; shift 2 ;;
+            *) abortar "Opción desconocida: $1" "" "Uso: seclab start [--profile PERFIL]" ;;
+        esac
+    done
+
+    exigir_env
+
+    if [ -n "$perfil" ]; then
+        validar_perfil "$perfil"
+        escribir_variable "$ARCHIVO_ENV" SECLAB_PERFIL "$perfil"
+        escribir_variable "$ARCHIVO_ENV" SECLAB_IMAGE "$(etiqueta_imagen_de "$perfil")"
+    else
+        perfil="$(perfil_actual)"
+    fi
+
+    if ! perfil_implementado "$perfil"; then
+        abortar "El perfil '${perfil}' está diseñado pero todavía no construido." \
+                "No hay imagen que arrancar." \
+                "Hoy sólo está implementado: $(perfiles_implementados). Usa 'seclab start --profile lite'."
+    fi
+
+    local imagen
+    imagen="$(leer_variable "$ARCHIVO_ENV" SECLAB_IMAGE)"
+    if ! imagen_existe "$imagen"; then
+        abortar "La imagen ${imagen} no existe." \
+                "No hay nada que arrancar." \
+                "Constrúyela con 'seclab image build --profile ${perfil}'."
+    fi
+
+    titulo "Arrancando el perfil '${perfil}'"
+    # Servicio explícito ('lab'), por costumbre y claridad: docker-compose.vpn.yml
+    # (Fase 7) ya no declara servicios propios, así que un 'up -d' sin
+    # argumentos también sería inequívoco hoy, pero nombrar el servicio deja
+    # claro qué se está arrancando si el día de mañana se añade otro (targets,
+    # MCP).
+    compose_seclab up -d lab
+
+    printf '  Esperando a que el laboratorio esté sano' >&2
+    local resultado=0
+    esperar_salud 120 || resultado=$?
+    printf '\n' >&2
+
+    case "$resultado" in
+        0) ok "Laboratorio sano" ;;
+        2)
+            error "El contenedor no se mantiene en marcha." \
+                  "El laboratorio no está disponible." \
+                  "El motivo está abajo, en sus propios logs; casi siempre es configuración de .env."
+            printf '\n' >&2
+            # Sólo las líneas del entrypoint: son las que explican la causa en
+            # castellano. Los logs completos siguen en 'docker compose logs'.
+            # Un bucle de reinicios repite el mismo error varias veces; se
+            # muestra una vez cada mensaje distinto, en orden.
+            compose_seclab logs --tail 60 lab 2>&1 | grep -E '\[SecLab\]' | \
+                awk '!visto[$0]++' | tail -6 >&2 || \
+                compose_seclab logs --tail 20 lab >&2
+            printf '\n' >&2
+            detalle "Todos los logs: docker compose logs lab"
+            exit "$SALIDA_ERROR"
+            ;;
+        *)
+            error "El laboratorio no llegó a estar sano en 120 segundos." \
+                  "Puede estar arrancando aún, o algún servicio no levanta." \
+                  "Revisa con 'seclab status' y 'docker compose logs lab'."
+            printf '  Último healthcheck: %s\n' "$(detalle_salud)" >&2
+            exit "$SALIDA_ERROR"
+            ;;
+    esac
+
+    mostrar_accesos "$perfil"
+}
+
+cmd_stop() {
+    exigir_env
+    local estado
+    estado="$(estado_contenedor)"
+    if [ "$estado" = "ausente" ]; then
+        info "El laboratorio no está en marcha."
+        return 0
+    fi
+    titulo "Deteniendo el laboratorio"
+    # `down` sin --volumes: los datos del alumno y el estado SSH se conservan.
+    compose_seclab down
+    ok "Detenido. Los volúmenes y el workspace siguen intactos."
+}
+
+# -----------------------------------------------------------------------------
+# limpiar
+# -----------------------------------------------------------------------------
+# Devuelve el laboratorio a un estado limpio sin tocar nada que sea del alumno.
+# Es una operación destructiva, así que dice exactamente qué se va y qué se
+# queda, y pide confirmación antes de nada.
+cmd_limpiar() {
+    exigir_env
+    local con_imagen=false imagen proyecto puerto
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --con-imagen) con_imagen=true ;;
+            *) abortar "Opción desconocida para 'limpiar': $1" \
+                       "No se ha borrado nada." \
+                       "Usa 'seclab limpiar' o 'seclab limpiar --con-imagen'." ;;
+        esac
+        shift
+    done
+
+    proyecto="$(leer_variable "$ARCHIVO_ENV" SECLAB_PROJECT)"
+    proyecto="${proyecto:-seclab}"
+    imagen="$(etiqueta_imagen_de "$(perfil_actual)")"
+    puerto="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_SSH)"
+    puerto="${puerto:-2222}"
+
+    titulo "Se va a borrar"
+    detalle "Contenedor y red del proyecto '${proyecto}'"
+    detalle "Volumen ${proyecto}-home (historial de shell y llaves de host SSH)"
+    [ "$con_imagen" = true ] && detalle "Imagen ${imagen}"
+
+    titulo "Se conserva"
+    detalle "workspace/ — tus labs, notas y evidencias"
+    detalle "vpn/ — tus perfiles y archivos .ovpn"
+    detalle ".env y secretos/ — tu configuración y tus llaves"
+
+    printf '\n' >&2
+    aviso "Al borrar el volumen se regeneran las llaves de host SSH."
+    detalle "Tu cliente avisará de que han cambiado. Se arregla con:"
+    detalle "ssh-keygen -R '[127.0.0.1]:${puerto}'"
+    printf '\n' >&2
+
+    if ! confirmar "¿Seguir adelante?"; then
+        info "Cancelado. No se ha borrado nada."
+        return 0
+    fi
+
+    titulo "Limpiando"
+    # Aquí sí van los volúmenes, a diferencia de 'stop'.
+    compose_seclab down --volumes --remove-orphans
+    ok "Contenedor, red y volúmenes eliminados"
+
+    # El borrado de la imagen puede fallar por una razón legítima: otra
+    # instancia de SecLab en la misma máquina comparte la etiqueta. Eso no debe
+    # tumbar el comando después de haber limpiado lo demás.
+    if [ "$con_imagen" = true ] && imagen_existe "$imagen"; then
+        if docker image rm "$imagen" >/dev/null 2>&1; then
+            ok "Imagen ${imagen} eliminada"
+        else
+            aviso "La imagen ${imagen} no se ha podido borrar."
+            detalle "Lo normal es que otra instancia de SecLab la esté usando."
+            detalle "Cuando ya no lo esté: docker image rm '${imagen}'"
+        fi
+    fi
+
+    # Artefactos de las validaciones locales.
+    rm -rf "${SECLAB_RAIZ}/scripts/__pycache__"
+
+    printf '\n' >&2
+    info "Arranca de nuevo con: seclab start"
+}
+
+# -----------------------------------------------------------------------------
+# backup
+# -----------------------------------------------------------------------------
+# Una copia de seguridad de SecLab guarda cuatro cosas —configuración, llaves,
+# perfiles de VPN y el trabajo del alumno— más el volumen del directorio
+# personal. Ver lib/backup.sh para el detalle de qué entra y por qué.
+#
+# La copia se verifica siempre justo después de crearla, y si la verificación
+# falla se borra: es la única forma de garantizar que nadie descubre una copia
+# vacía el día que necesita restaurarla.
+cmd_backup() {
+    case "${1:-crear}" in
+        verify|verificar) shift; backup_verificar "$@" ;;
+        list|listar)      shift; backup_listar "$@" ;;
+        # `shift` sin argumentos devuelve 1, y con `set -e` eso bastaba para que
+        # `seclab backup` a secas terminara en error sin decir nada.
+        crear)            if [ $# -gt 0 ]; then shift; fi; backup_crear "$@" ;;
+        -*)                      backup_crear "$@" ;;
+        *) abortar "Subcomando desconocido para 'backup': $1" \
+                   "No se ha creado ninguna copia." \
+                   "Uso: seclab backup [--sin-workspace] [--destino DIR] | backup verify [ARCHIVO] | backup list" ;;
+    esac
+}
+
+backup_crear() {
+    local con_workspace=si destino="" ruta_ws nombre_ws
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --sin-workspace) con_workspace=no; shift ;;
+            --destino) destino="${2:-}"; shift 2 ;;
+            *) abortar "Opción desconocida para 'backup': $1" \
+                       "No se ha creado ninguna copia." \
+                       "Uso: seclab backup [--sin-workspace] [--destino DIR]" ;;
+        esac
+    done
+
+    exigir_env
+
+    [ -z "$destino" ] && destino="$(directorio_copias)"
+    install -d -m 0700 "$destino" 2>/dev/null || \
+        abortar "No se puede crear el directorio de copias: ${destino}" \
+                "No hay dónde escribir la copia." \
+                "Comprueba los permisos, o elige otro con --destino."
+
+    ruta_ws="$(leer_variable "$ARCHIVO_ENV" SECLAB_WORKSPACE)"
+    ruta_ws="${ruta_ws:-./workspace}"
+    case "$ruta_ws" in
+        /*) : ;;
+        *)  ruta_ws="${SECLAB_RAIZ}/${ruta_ws#./}" ;;
+    esac
+    nombre_ws="$(basename "$ruta_ws")"
+
+    # Una copia dentro del propio workspace se incluiría a sí misma y crecería
+    # sin límite en cada ejecución.
+    case "$(cd "$destino" 2>/dev/null && pwd)/" in
+        "$(cd "$ruta_ws" 2>/dev/null && pwd)"/*)
+            abortar "El directorio de copias está dentro del workspace." \
+                    "La copia se incluiría a sí misma y crecería en cada ejecución." \
+                    "Usa --destino con una ruta fuera de ${ruta_ws}." ;;
+    esac
+
+    local staging archivo marca fuentes contenido proyecto
+    marca="$(date '+%Y%m%d-%H%M%S')"
+    proyecto="$(leer_variable "$ARCHIVO_ENV" SECLAB_PROJECT)"
+    # El prefijo 'seclab-' identifica el formato y es el que busca 'backup list'.
+    # El nombre del proyecto sólo se añade cuando aporta algo: en la instalación
+    # por defecto sería 'seclab-seclab-...'.
+    if [ -z "$proyecto" ] || [ "$proyecto" = "seclab" ]; then
+        archivo="${destino}/seclab-${marca}.tar.gz"
+    else
+        archivo="${destino}/seclab-${proyecto}-${marca}.tar.gz"
+    fi
+
+    # El área de trabajo va dentro del repositorio a propósito: el contenedor
+    # auxiliar que exporta el volumen tiene que poder montarla, y en macOS y
+    # Windows sólo se comparten con Docker unas rutas concretas. La del
+    # repositorio ya está compartida, porque el laboratorio monta ./workspace.
+    staging="${SECLAB_RAIZ}/backups/.staging-$$"
+    install -d -m 0700 "$staging"
+    # shellcheck disable=SC2064  # se quiere expandir $staging ahora, no al salir
+    trap "rm -rf '$staging'" EXIT INT TERM
+
+    titulo "Creando copia de seguridad"
+
+    # --- Directorio personal (volumen) ---
+    info "Exportando el volumen del directorio personal"
+    local resultado=0
+    exportar_home "${staging}/home.tar" || resultado=$?
+    case "$resultado" in
+        0) ok "Directorio personal exportado ($(tamano_legible "$(tamano_bytes "${staging}/home.tar")"))" ;;
+        2) abortar "El volumen $(volumen_home) no existe todavía." \
+                   "No hay directorio personal que copiar, así que la copia estaría incompleta." \
+                   "Arranca el laboratorio al menos una vez con 'seclab start'." ;;
+        3) abortar "La imagen del laboratorio no está construida." \
+                   "Se necesita para leer el volumen del directorio personal." \
+                   "Constrúyela con 'seclab image build'." ;;
+        *) abortar "Falló la exportación del volumen del directorio personal." \
+                   "No se ha creado ninguna copia." \
+                   "Revisa que Docker responde con 'seclab doctor'." ;;
+    esac
+
+    # --- Fuentes del host ---
+    # Cada fuente lleva su propio -C: .env y secretos/ viven en el repositorio,
+    # pero el workspace puede estar configurado en cualquier otra ruta.
+    fuentes=(-C "$SECLAB_RAIZ" ".env")
+    contenido=".env"
+    if [ -d "${SECLAB_RAIZ}/secretos" ]; then
+        fuentes+=(-C "$SECLAB_RAIZ" "secretos")
+        contenido="${contenido} secretos"
+    else
+        aviso "No hay secretos/: la copia no incluirá la llave SSH del laboratorio."
+    fi
+    if [ -d "${SECLAB_RAIZ}/vpn" ]; then
+        fuentes+=(-C "$SECLAB_RAIZ" "vpn")
+        contenido="${contenido} vpn"
+    fi
+    if [ "$con_workspace" = "si" ]; then
+        if [ -d "$ruta_ws" ]; then
+            fuentes+=(-C "$(dirname "$ruta_ws")" "$nombre_ws")
+            contenido="${contenido} ${nombre_ws}"
+        else
+            aviso "El workspace configurado no existe (${ruta_ws}); no se incluye."
+            con_workspace=no
+        fi
+    else
+        info "Copia sin workspace, por petición explícita."
+    fi
+    contenido="${contenido} home.tar"
+
+    escribir_manifiesto "${staging}/MANIFIESTO" "$contenido" "$con_workspace" "$nombre_ws"
+
+    # --- Empaquetado ---
+    # umask 077: la copia contiene .env y la llave SSH en claro y nace privada,
+    # no privada después de un chmod que podría fallar.
+    info "Empaquetando"
+    if ! ( umask 077; COPYFILE_DISABLE=1 tar -czf "$archivo" \
+            "${fuentes[@]}" \
+            -C "$staging" "MANIFIESTO" "home.tar" ); then
+        rm -f "$archivo"
+        abortar "Falló el empaquetado de la copia." \
+                "No se ha dejado ningún archivo a medias." \
+                "Revisa el espacio libre en ${destino}."
+    fi
+    chmod 600 "$archivo"
+    printf '%s  %s\n' "$(sha256_de "$archivo")" "$(basename "$archivo")" > "${archivo}.sha256"
+
+    # --- Verificación inmediata ---
+    titulo "Verificando la copia recién creada"
+    if ! verificar_copia "$archivo"; then
+        rm -f "$archivo" "${archivo}.sha256"
+        abortar "La copia no ha pasado su propia verificación y se ha borrado." \
+                "Es preferible no tener copia que tener una que no sirve." \
+                "Revisa los errores de arriba y vuelve a intentarlo."
+    fi
+
+    printf '\n' >&2
+    ok "Copia creada: ${archivo}"
+    detalle "Verifícala cuando quieras con: seclab backup verify"
+    detalle "Restaura con:                  seclab restore '${archivo}'"
+    detalle "Contiene secretos en claro: guárdala donde guardarías una contraseña."
+}
+
+backup_verificar() {
+    local archivo="${1:-}"
+    exigir_env
+    if [ -z "$archivo" ]; then
+        archivo="$(copia_reciente)"
+        if [ -z "$archivo" ]; then
+            abortar "No hay ninguna copia en $(directorio_copias)." \
+                    "No hay nada que verificar." \
+                    "Crea una con 'seclab backup'."
+        fi
+        info "Verificando la copia más reciente."
+    fi
+    titulo "Verificación"
+    if verificar_copia "$archivo"; then
+        printf '\n' >&2
+        ok "La copia es utilizable."
+        return 0
+    fi
+    printf '\n' >&2
+    error "La copia NO es utilizable." \
+          "No cuentes con ella para restaurar." \
+          "Crea una nueva con 'seclab backup'."
+    return 1
+}
+
+backup_listar() {
+    exigir_env
+    local copias archivo total=0
+    copias="$(copias_existentes)"
+    titulo "Copias en $(directorio_copias)"
+    if [ -z "$copias" ]; then
+        detalle "Ninguna todavía. Crea la primera con 'seclab backup'."
+        return 0
+    fi
+    # Un byte más de ancho en la cabecera: printf cuenta bytes, no caracteres, y
+    # la Ñ de «TAMAÑO» ocupa dos. Sin esto la columna sale desalineada.
+    printf '  %-42s %11s  %s\n' "ARCHIVO" "TAMAÑO" "SHA-256" >&2
+    local suma
+    while IFS= read -r archivo; do
+        [ -z "$archivo" ] && continue
+        total=$(( total + 1 ))
+        if [ -f "${archivo}.sha256" ]; then suma="sí"; else suma="${C_AMARILLO}no${C_FIN}"; fi
+        printf '  %-42s %10s  %s\n' \
+            "$(basename "$archivo")" \
+            "$(tamano_legible "$(tamano_bytes "$archivo")")" \
+            "$suma" >&2
+    done <<< "$copias"
+    printf '\n' >&2
+    detalle "${total} copia(s). La más reciente es la primera de la lista."
+    detalle "SecLab no borra copias antiguas: hazlo tú cuando ya no las necesites."
+}
+
+# -----------------------------------------------------------------------------
+# restore
+# -----------------------------------------------------------------------------
+# Dos modos, y la diferencia importa:
+#
+#   --destino DIR   extrae la copia en un directorio nuevo y no toca nada más.
+#                   Es el modo seguro: sirve para inspeccionar una copia, para
+#                   recuperar un solo archivo y para comprobar que la copia de
+#                   verdad se puede restaurar.
+#
+#   sin --destino   restaura sobre esta instalación. Pide confirmación, exige
+#                   el laboratorio detenido y en lugar de borrar lo que hay lo
+#                   aparta a <nombre>.previo-<fecha>, para que un error de
+#                   elección no sea irreversible.
+cmd_restore() {
+    local archivo="" destino=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --destino) destino="${2:-}"; shift 2 ;;
+            --reciente) archivo="$(copia_reciente)"; shift ;;
+            -*) abortar "Opción desconocida para 'restore': $1" \
+                        "No se ha restaurado nada." \
+                        "Uso: seclab restore ARCHIVO|--reciente [--destino DIR]" ;;
+            *) archivo="$1"; shift ;;
+        esac
+    done
+
+    exigir_env
+
+    if [ -z "$archivo" ]; then
+        abortar "No has indicado qué copia restaurar." \
+                "No se ha restaurado nada." \
+                "Uso: seclab restore ARCHIVO|--reciente. Lista las copias con 'seclab backup list'."
+    fi
+
+    titulo "Comprobando la copia antes de tocar nada"
+    if ! verificar_copia "$archivo"; then
+        abortar "La copia no ha pasado la verificación." \
+                "Restaurar desde una copia corrupta dejaría el laboratorio en un estado peor." \
+                "Prueba con otra copia: 'seclab backup list'."
+    fi
+
+    local formato
+    formato="$(tar -xzOf "$archivo" MANIFIESTO 2>/dev/null | grep -m1 '^formato=' | cut -d= -f2-)"
+    if [ -n "$formato" ] && [ "$formato" -gt "$SECLAB_COPIA_FORMATO" ] 2>/dev/null; then
+        abortar "La copia usa el formato ${formato} y esta versión de SecLab entiende hasta el ${SECLAB_COPIA_FORMATO}." \
+                "No se ha restaurado nada: podría interpretarla mal." \
+                "Actualiza SecLab con 'seclab update' y vuelve a intentarlo."
+    fi
+
+    if [ -n "$destino" ]; then
+        restore_a_directorio "$archivo" "$destino"
+    else
+        restore_en_sitio "$archivo"
+    fi
+}
+
+# Modo seguro: extrae y no toca la instalación.
+restore_a_directorio() {
+    local archivo="$1" destino="$2"
+
+    if [ -e "$destino" ] && [ -n "$(ls -A "$destino" 2>/dev/null)" ]; then
+        abortar "El destino ya existe y no está vacío: ${destino}" \
+                "No se ha extraído nada, para no mezclar dos copias." \
+                "Elige un directorio nuevo o vacía ese."
+    fi
+
+    install -d -m 0700 "$destino"
+    titulo "Extrayendo en ${destino}"
+    if ! ( umask 077; tar -xpzf "$archivo" -C "$destino" ); then
+        abortar "Falló la extracción." \
+                "El destino puede haber quedado a medias." \
+                "Revisa el espacio libre y los permisos de ${destino}."
+    fi
+
+    ok "Copia extraída sin tocar tu instalación"
+    printf '\n' >&2
+    detalle "Contenido:"
+    ls -1 "$destino" | sed 's/^/    /' >&2
+    printf '\n' >&2
+    detalle "El directorio personal está en ${destino}/home.tar (un tar dentro del tar)."
+    detalle "Míralo con: tar -tf '${destino}/home.tar'"
+    detalle "Esta copia contiene .env y la llave SSH en claro. Bórrala al terminar:"
+    detalle "rm -rf '${destino}'"
+}
+
+# Modo en sitio: destructivo, con confirmación y con red de seguridad.
+restore_en_sitio() {
+    local archivo="$1" estado staging marca nombre_ws ruta_ws elemento
+
+    estado="$(estado_contenedor)"
+    if [ "$estado" = "running" ]; then
+        abortar "El laboratorio está en marcha." \
+                "Restaurar el directorio personal mientras sshd lo está usando dejaría el volumen inconsistente." \
+                "Deténlo con 'seclab stop' y repite el comando."
+    fi
+
+    ruta_ws="$(leer_variable "$ARCHIVO_ENV" SECLAB_WORKSPACE)"
+    ruta_ws="${ruta_ws:-./workspace}"
+    case "$ruta_ws" in
+        /*) : ;;
+        *)  ruta_ws="${SECLAB_RAIZ}/${ruta_ws#./}" ;;
+    esac
+    nombre_ws="$(basename "$ruta_ws")"
+    marca="$(date '+%Y%m%d-%H%M%S')"
+
+    titulo "Se va a restaurar sobre esta instalación"
+    detalle ".env, secretos/, vpn/ y ${nombre_ws}/"
+    detalle "El volumen $(volumen_home) (directorio personal y llaves de host SSH)"
+
+    titulo "Red de seguridad"
+    detalle "Lo que hay ahora no se borra: se aparta a <nombre>.previo-${marca}"
+    detalle "El volumen del directorio personal SÍ se sobrescribe: no tiene versión anterior."
+
+    printf '\n' >&2
+    if ! confirmar "¿Restaurar ahora?"; then
+        info "Cancelado. No se ha tocado nada."
+        return 0
+    fi
+
+    staging="${SECLAB_RAIZ}/backups/.restore-$$"
+    install -d -m 0700 "$staging"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$staging'" EXIT INT TERM
+
+    titulo "Restaurando"
+    info "Extrayendo la copia"
+    if ! ( umask 077; tar -xpzf "$archivo" -C "$staging" ); then
+        abortar "Falló la extracción de la copia." \
+                "No se ha modificado nada de tu instalación todavía." \
+                "Revisa el espacio libre en ${SECLAB_RAIZ}."
+    fi
+
+    # Los datos del host: se aparta lo actual y se pone lo restaurado.
+    for elemento in ".env" "secretos" "vpn"; do
+        [ -e "${staging}/${elemento}" ] || continue
+        if [ -e "${SECLAB_RAIZ}/${elemento}" ]; then
+            mv "${SECLAB_RAIZ}/${elemento}" "${SECLAB_RAIZ}/${elemento}.previo-${marca}"
+        fi
+        mv "${staging}/${elemento}" "${SECLAB_RAIZ}/${elemento}"
+        ok "Restaurado ${elemento}"
+    done
+
+    # El nombre con el que viaja el workspace lo dice la copia, no la
+    # configuración actual: pueden no coincidir.
+    local miembro_ws
+    miembro_ws="$(valor_manifiesto "${staging}/MANIFIESTO" workspace_miembro)"
+    [ -z "$miembro_ws" ] && miembro_ws="$nombre_ws"
+
+    if [ -e "${staging}/${miembro_ws}" ]; then
+        if [ -e "$ruta_ws" ]; then
+            mv "$ruta_ws" "${ruta_ws}.previo-${marca}"
+        fi
+        mv "${staging}/${miembro_ws}" "$ruta_ws"
+        if [ "$miembro_ws" = "$nombre_ws" ]; then
+            ok "Restaurado ${nombre_ws}"
+        else
+            ok "Restaurado ${miembro_ws} en ${ruta_ws} (cambió de nombre desde la copia)"
+        fi
+    else
+        aviso "La copia no incluye workspace; el tuyo se queda como está."
+    fi
+
+    # El volumen del directorio personal.
+    info "Restaurando el volumen del directorio personal"
+    local resultado=0
+    importar_home "${staging}/home.tar" || resultado=$?
+    case "$resultado" in
+        0) ok "Directorio personal restaurado" ;;
+        3) aviso "La imagen no está construida: el volumen no se ha restaurado."
+           detalle "Constrúyela con 'seclab image build' y repite 'seclab restore'." ;;
+        *) error "Falló la restauración del volumen del directorio personal." \
+                 "El resto sí se ha restaurado; el directorio personal se regenerará vacío al arrancar." \
+                 "Revisa que Docker responde con 'seclab doctor'." ;;
+    esac
+
+    # Permisos: una copia extraída puede llegar con el modo del sistema origen.
+    asegurar_permisos_restaurados
+
+    printf '\n' >&2
+    ok "Restauración terminada"
+    detalle "Comprueba el entorno: seclab doctor"
+    detalle "Arranca:              seclab start"
+    detalle "Si todo está bien, borra las copias apartadas: *.previo-${marca}"
+}
+
+# Los permisos son parte del modelo de seguridad, no un detalle estético: un
+# .env legible por todo el mundo expone los secretos del laboratorio, y ssh se
+# niega a usar una llave privada con permisos abiertos.
+asegurar_permisos_restaurados() {
+    [ -f "${SECLAB_RAIZ}/.env" ] && chmod 600 "${SECLAB_RAIZ}/.env"
+    if [ -d "${SECLAB_RAIZ}/secretos" ]; then
+        chmod 700 "${SECLAB_RAIZ}/secretos"
+        find "${SECLAB_RAIZ}/secretos" -type f ! -name '*.pub' -exec chmod 600 {} + 2>/dev/null || true
+        find "${SECLAB_RAIZ}/secretos" -type f -name '*.pub' -exec chmod 644 {} + 2>/dev/null || true
+    fi
+    if [ -d "${SECLAB_RAIZ}/vpn" ]; then
+        chmod 700 "${SECLAB_RAIZ}/vpn"
+        find "${SECLAB_RAIZ}/vpn" -mindepth 1 -type d -exec chmod 700 {} + 2>/dev/null || true
+        find "${SECLAB_RAIZ}/vpn" -type f \( -name '*.ovpn' -o -name 'credenciales*' -o -name '*.env' \) \
+            -exec chmod 600 {} + 2>/dev/null || true
+    fi
+    ok "Permisos de .env, secretos/ y vpn/ asegurados"
+}
+
+# -----------------------------------------------------------------------------
+# open
+# -----------------------------------------------------------------------------
+# Abre la página de bienvenida en el navegador del host. La página la genera el
+# contenedor en cada arranque a partir de su estado real, y no contiene ningún
+# secreto: se sirve por HTTP y acabaría en el historial del navegador.
+cmd_open() {
+    exigir_env
+    local estado url abridor
+
+    estado="$(estado_contenedor)"
+    if [ "$estado" != "running" ]; then
+        abortar "El laboratorio no está en marcha (estado: ${estado})." \
+                "La página de bienvenida la sirve el propio contenedor." \
+                "Ejecuta 'seclab start'."
+    fi
+
+    if ! servicio_activo web; then
+        abortar "Este laboratorio no sirve la página de bienvenida." \
+                "No hay nada que abrir." \
+                "Llega con el perfil 'desktop': seclab start --profile desktop"
+    fi
+
+    url="$(url_servicio SECLAB_PUERTO_WEB 8080)"
+
+    # Cada sistema abre el navegador a su manera, y en WSL2 el navegador está
+    # en Windows. Si no hay forma de saberlo, se imprime la URL: es mejor que
+    # un error sobre un comando que el alumno no ha pedido.
+    for abridor in open xdg-open wslview; do
+        if existe_comando "$abridor"; then
+            info "Abriendo ${url}"
+            "$abridor" "$url" >/dev/null 2>&1 && return 0
+            break
+        fi
+    done
+
+    info "Abre esto en tu navegador:"
+    printf '\n    %s\n\n' "$url" >&2
+}
+
+cmd_restart() {
+    exigir_env
+    cmd_stop
+    cmd_start
+}
+
+# -----------------------------------------------------------------------------
+# status
+# -----------------------------------------------------------------------------
+cmd_status() {
+    exigir_env
+    local perfil estado salud imagen id
+    perfil="$(perfil_actual)"
+    estado="$(estado_contenedor)"
+    salud="$(salud_contenedor)"
+    imagen="$(leer_variable "$ARCHIVO_ENV" SECLAB_IMAGE)"
+
+    titulo "SecLab ${SECLAB_VERSION}"
+    printf '  %-14s %s\n' "Perfil" "$perfil" >&2
+    printf '  %-14s %s\n' "Imagen" "$imagen" >&2
+    printf '  %-14s %s\n' "Proyecto" "$(leer_variable "$ARCHIVO_ENV" SECLAB_PROJECT)" >&2
+
+    case "$estado" in
+        running)
+            printf '  %-14s %s\n' "Contenedor" "${C_VERDE}en marcha${C_FIN}" >&2
+            case "$salud" in
+                healthy)   printf '  %-14s %s\n' "Salud" "${C_VERDE}sano${C_FIN}" >&2 ;;
+                starting)  printf '  %-14s %s\n' "Salud" "${C_AMARILLO}arrancando${C_FIN}" >&2 ;;
+                unhealthy)
+                    printf '  %-14s %s\n' "Salud" "${C_ROJO}no sano${C_FIN}" >&2
+                    printf '  %-14s %s\n' "Motivo" "$(detalle_salud)" >&2
+                    ;;
+                *) printf '  %-14s %s\n' "Salud" "$salud" >&2 ;;
+            esac
+            ;;
+        exited)  printf '  %-14s %s\n' "Contenedor" "${C_AMARILLO}detenido${C_FIN}" >&2 ;;
+        ausente) printf '  %-14s %s\n' "Contenedor" "${C_GRIS}no creado${C_FIN}" >&2 ;;
+        *)       printf '  %-14s %s\n' "Contenedor" "$estado" >&2 ;;
+    esac
+
+    local labs n_labs
+    labs="$(labs_existentes)"
+    if [ -n "$labs" ]; then
+        n_labs="$(printf '%s\n' "$labs" | grep -c .)"
+        printf '  %-14s %s\n' "Labs" "${n_labs}: $(printf '%s' "$labs" | tr '\n' ' ')" >&2
+    fi
+
+    if [ "$estado" = "running" ]; then
+        id="$(id_contenedor)"
+        titulo "Consumo"
+        docker stats --no-stream --format '  CPU {{.CPUPerc}}   RAM {{.MemUsage}} ({{.MemPerc}})' "$id" >&2
+        mostrar_accesos "$perfil"
+    else
+        printf '\n' >&2
+        detalle "Arranca con: seclab start"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# shell
+# -----------------------------------------------------------------------------
+cmd_shell() {
+    exigir_env
+    local estado usuario id lab="" directorio="/workspace"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --lab) lab="${2:-}"; shift 2 ;;
+            -*) abortar "Opción desconocida para 'shell': $1" "" \
+                        "Uso: seclab shell [--lab NOMBRE]" ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -n "$lab" ]; then
+        validar_slug "$lab" || exit "$SALIDA_USO"
+        if ! lab_existe "$lab"; then
+            abortar "No existe el lab '${lab}'." \
+                    "No se ha abierto ninguna shell." \
+                    "Créalo con 'seclab lab create ${lab}' o mira los que hay con 'seclab lab list'."
+        fi
+        directorio="$(ruta_lab_contenedor "$lab")"
+    fi
+
+    estado="$(estado_contenedor)"
+    if [ "$estado" != "running" ]; then
+        abortar "El laboratorio no está en marcha (estado: ${estado})." \
+                "No hay dónde abrir una shell." \
+                "Ejecuta 'seclab start'."
+    fi
+    usuario="$(leer_variable "$ARCHIVO_ENV" SECLAB_USUARIO)"
+    id="$(id_contenedor)"
+
+    # Sin terminal interactivo, `docker exec -it` falla con un mensaje que no
+    # dice qué hacer. Se detecta antes y se ofrece la alternativa útil.
+    if [ ! -t 0 ]; then
+        abortar "'seclab shell' necesita un terminal interactivo." \
+                "No se ha abierto ninguna sesión." \
+                "Desde un script, ejecuta el comando directamente: docker exec ${id} <comando>."
+    fi
+
+    # El aviso va antes del exec: después ya no hay quien lo imprima.
+    [ -n "$lab" ] && avisar_desajuste_vpn "$lab"
+
+    exec docker exec -it -u "${usuario:-seclab}" -w "$directorio" "$id" /usr/bin/zsh -l
+}
+
+# -----------------------------------------------------------------------------
+# escritorio
+# -----------------------------------------------------------------------------
+# La configuración del escritorio (barra superior, fuente de la terminal y
+# accesos directos) se siembra en el primer arranque de la sesión y después no
+# se toca: si el alumno la cambia, es suya.
+#
+# El problema es que XFCE reescribe su propia configuración en cuanto arranca
+# —convierte los lanzadores en archivos con nombres numéricos—, así que un
+# laboratorio que ya se ha usado nunca vuelve a parecerse a la plantilla y la
+# siembra automática deja de aplicarse. De ahí este comando: adopta la del
+# curso a propósito, diciendo qué se va a sobrescribir.
+cmd_escritorio() {
+    case "${1:-ayuda}" in
+        restablecer|reset) escritorio_restablecer ;;
+        *)
+            printf '%s\n' "${C_NEGRITA}seclab escritorio${C_FIN} — configuración del escritorio del curso" >&2
+            printf '\n  %s\n' "restablecer   Barra superior, fuente de la terminal y accesos directos" >&2
+            printf '\n' >&2
+            detalle "Sólo afecta al perfil desktop, full y full-msf."
+            ;;
+    esac
+}
+
+escritorio_restablecer() {
+    exigir_env
+    local id usuario
+
+    id="$(id_contenedor)"
+    if [ "$(estado_contenedor)" != "running" ]; then
+        abortar "El laboratorio no está en marcha." \
+                "La configuración vive en su directorio personal." \
+                "Ejecuta 'seclab start'."
+    fi
+    if ! servicio_activo escritorio; then
+        abortar "Este laboratorio no trae escritorio." \
+                "No hay configuración de escritorio que restablecer." \
+                "Usa el perfil 'desktop' o superior: seclab start --profile desktop"
+    fi
+
+    usuario="$(leer_variable "$ARCHIVO_ENV" SECLAB_USUARIO)"
+    usuario="${usuario:-seclab}"
+
+    titulo "Se va a sobrescribir"
+    detalle "La barra superior (xfce4-panel.xml), con los lanzadores de terminal y Firefox"
+    detalle "La configuración de la terminal (terminalrc), con la Nerd Font del curso"
+    detalle "El tema oscuro, los iconos del escritorio y el color de fondo"
+    detalle "Los accesos directos del escritorio (~/Desktop): terminal, Firefox y workspace"
+
+    titulo "Se conserva"
+    detalle "Todo lo demás: atajos de teclado, ventanas, y por supuesto tu trabajo"
+    printf '\n' >&2
+    aviso "La sesión de escritorio se reinicia; se cerrarán las ventanas abiertas en él."
+    detalle "La terminal y el resto del laboratorio no se tocan."
+    printf '\n' >&2
+
+    if ! confirmar "¿Restablecer la configuración del escritorio?"; then
+        info "Cancelado. No se ha tocado nada."
+        return 0
+    fi
+
+    # La sesión se detiene primero: xfconfd mantiene su copia en memoria y
+    # reescribiría el archivo al salir, deshaciendo el cambio sin decir nada.
+    titulo "Restableciendo"
+    info "Deteniendo la sesión de escritorio"
+    docker exec "$id" supervisorctl -c /run/seclab/supervisord.conf \
+        stop escritorio-sesion >/dev/null 2>&1 || true
+
+    docker exec -u "$usuario" "$id" sh -c '
+set -eu
+CONF="${HOME}/.config"
+XML="${CONF}/xfce4/xfconf/xfce-perchannel-xml"
+install -d -m 0700 "$XML" "${CONF}/xfce4/terminal" "${CONF}/gtk-3.0"
+cp /opt/seclab/desktop/xfce4-panel.xml   "${XML}/xfce4-panel.xml"
+cp /opt/seclab/desktop/xfce4-desktop.xml "${XML}/xfce4-desktop.xml"
+cp /opt/seclab/desktop/xsettings.xml     "${XML}/xsettings.xml"
+cp /opt/seclab/desktop/gtk-settings.ini  "${CONF}/gtk-3.0/settings.ini"
+cp /opt/seclab/desktop/terminalrc        "${CONF}/xfce4/terminal/terminalrc"
+# Los directorios launcher-N pertenecen a los identificadores de plugin de la
+# configuración anterior: si se quedan, la barra nueva arrastra lanzadores
+# huérfanos.
+rm -rf "${CONF}"/xfce4/panel/launcher-*
+install -d -m 0755 "${HOME}/Desktop"
+for lanzador in xfce4-terminal firefox; do
+    if [ -r "/usr/share/applications/${lanzador}.desktop" ]; then
+        cp "/usr/share/applications/${lanzador}.desktop" "${HOME}/Desktop/${lanzador}.desktop"
+        chmod 0755 "${HOME}/Desktop/${lanzador}.desktop"
+    fi
+done
+ln -sfn /workspace "${HOME}/Desktop/workspace"
+' || abortar "No se ha podido escribir la configuración." \
+             "La sesión de escritorio está detenida." \
+             "Arráncala con: seclab shell → servicios start escritorio-sesion"
+
+    ok "Configuración del curso escrita"
+
+    info "Arrancando la sesión de escritorio"
+    docker exec "$id" supervisorctl -c /run/seclab/supervisord.conf \
+        start escritorio-sesion >/dev/null 2>&1 || true
+
+    printf '\n' >&2
+    ok "Listo. Recarga la pestaña de noVNC si la tenías abierta."
+    detalle "Barra superior: menú, terminal, Firefox, ventanas, reloj y salir."
+    detalle "En el escritorio: accesos directos de terminal y Firefox."
+}
+
+# -----------------------------------------------------------------------------
+# logs
+# -----------------------------------------------------------------------------
+# Los servicios escriben en la salida del contenedor, no en archivos dentro de
+# él: así `docker logs` los ve sin entrar a buscarlos y no crecen sin control
+# en un volumen. El precio es que las salidas de todos los servicios van
+# entremezcladas, sin prefijo; para separarlas se filtra por patrón.
+#
+#   seclab logs                     todo
+#   seclab logs escritorio          sólo las líneas que mencionan 'escritorio'
+#   seclab logs --seguir            en directo
+cmd_logs() {
+    local seguir=false lineas=80 patron=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --seguir|-f) seguir=true; shift ;;
+            --lineas|-n) lineas="${2:-80}"; shift 2 ;;
+            -*) abortar "Opción desconocida para 'logs': $1" "" \
+                        "Uso: seclab logs [PATRÓN] [--seguir] [--lineas N]" ;;
+            *) patron="$1"; shift ;;
+        esac
+    done
+
+    exigir_env
+    if [ "$(estado_contenedor)" = "ausente" ]; then
+        abortar "El laboratorio no existe todavía." \
+                "No hay logs que mostrar." \
+                "Arráncalo con 'seclab start'."
+    fi
+
+    if [ "$seguir" = true ]; then
+        if [ -n "$patron" ]; then
+            detalle "Siguiendo las líneas que contienen '${patron}'. Ctrl-C para salir."
+            compose_seclab logs --follow --tail "$lineas" lab 2>&1 | grep --line-buffered -i "$patron"
+        else
+            compose_seclab logs --follow --tail "$lineas" lab
+        fi
+        return 0
+    fi
+
+    if [ -n "$patron" ]; then
+        # `|| true`: que el patrón no aparezca no es un fallo del comando.
+        compose_seclab logs --tail "$lineas" lab 2>&1 | grep -i "$patron" || \
+            info "Ninguna línea de los últimos ${lineas} registros menciona '${patron}'."
+    else
+        compose_seclab logs --tail "$lineas" lab
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# lab
+# -----------------------------------------------------------------------------
+# Un lab es un directorio del workspace con estructura fija y una ficha que
+# dice contra qué se trabaja y con qué autorización. Se pueden tener varios a
+# la vez: cada uno es independiente.
+cmd_lab() {
+    case "${1:-ayuda}" in
+        create|crear)   shift; lab_crear "$@" ;;
+        reset|reiniciar) shift; lab_reiniciar "$@" ;;
+        list|listar)    shift; lab_listar "$@" ;;
+        ayuda|-h|--help)
+            cat >&2 <<AYUDA
+${C_NEGRITA}seclab lab${C_FIN} — laboratorios del workspace
+
+  create NOMBRE [--vpn PERFIL]   Crea un lab con su estructura y su ficha
+  list                           Labs existentes, con su perfil de VPN
+  reset NOMBRE                   Vuelve al estado inicial, archivando lo anterior
+
+${C_NEGRITA}NOMBRE${C_FIN}
+  Minúsculas, dígitos y guiones, hasta ${SECLAB_SLUG_MAX} caracteres: htb-forest, thm-blue.
+
+${C_NEGRITA}PERFIL${C_FIN}
+  $(perfiles_vpn_validos | tr ' ' '|'). Queda anotado en la ficha del lab, y el CLI
+  avisa cuando trabajas en un lab cuyo perfil no es el activo.
+AYUDA
+            ;;
+        *) abortar "Subcomando desconocido para 'lab': $1" \
+                   "No se ha hecho nada." \
+                   "Ejecuta 'seclab lab ayuda'." ;;
+    esac
+}
+
+lab_crear() {
+    local nombre="" perfil_vpn="" rangos ruta subdir
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --vpn) perfil_vpn="${2:-}"; shift 2 ;;
+            -*) abortar "Opción desconocida para 'lab create': $1" \
+                        "No se ha creado nada." \
+                        "Uso: seclab lab create NOMBRE [--vpn PERFIL]" ;;
+            *) nombre="$1"; shift ;;
+        esac
+    done
+
+    exigir_env
+    validar_slug "$nombre" || exit "$SALIDA_USO"
+
+    if [ -n "$perfil_vpn" ] && ! perfil_vpn_valido "$perfil_vpn"; then
+        abortar "Perfil de VPN desconocido: ${perfil_vpn}" \
+                "No se ha creado nada." \
+                "Perfiles válidos: $(perfiles_vpn_validos)."
+    fi
+
+    ruta="$(ruta_lab "$nombre")"
+    if [ -e "$ruta" ]; then
+        abortar "Ya existe algo en ${ruta}" \
+                "No se ha tocado nada: crear encima podría pisar tu trabajo." \
+                "Usa otro nombre, o 'seclab lab reset ${nombre}' para volver a empezar conservando lo anterior."
+    fi
+
+    titulo "Creando el lab '${nombre}'"
+
+    install -d -m 0700 "$ruta"
+    for subdir in $SECLAB_LAB_DIRS; do
+        install -d -m 0700 "${ruta}/${subdir}"
+    done
+
+    if [ -n "$perfil_vpn" ]; then
+        rangos="$(rangos_del_perfil "$perfil_vpn")"
+    else
+        perfil_vpn="ninguno"
+        rangos="sin declarar"
+    fi
+
+    expandir_plantilla "${SECLAB_RAIZ}/templates/lab/scope.txt" \
+        "${ruta}/scope.txt" "$nombre" "$perfil_vpn" "$rangos"
+    expandir_plantilla "${SECLAB_RAIZ}/templates/lab/report.md" \
+        "${ruta}/report.md" "$nombre" "$perfil_vpn" "$rangos"
+    chmod 600 "${ruta}/scope.txt" "${ruta}/report.md"
+
+    ok "Estructura creada en ${ruta}"
+    printf '\n' >&2
+    printf '  %s\n' "workspace/${nombre}/" >&2
+    printf '  %s\n' "├── scope.txt      ${C_GRIS}ficha: objetivo, autorización, límites${C_FIN}" >&2
+    printf '  %s\n' "├── report.md      ${C_GRIS}informe, con su esqueleto ya puesto${C_FIN}" >&2
+    for subdir in $SECLAB_LAB_DIRS; do
+        printf '  %s\n' "├── ${subdir}/" >&2
+    done
+    printf '\n' >&2
+
+    if [ "$perfil_vpn" != "ninguno" ]; then
+        printf '  %-14s %s\n' "Perfil VPN" "$perfil_vpn" >&2
+        printf '  %-14s %s\n' "Rangos" "$rangos" >&2
+        printf '\n' >&2
+        detalle "Los rangos van en la ficha para que los tengas delante, no como filtro:"
+        detalle "SecLab no comprueba contra qué lanzas nada. Ver docs/uso-autorizado.md."
+    fi
+
+    detalle "Abre la ficha y rellena objetivo y autorización antes de empezar:"
+    detalle "  \$EDITOR workspace/${nombre}/scope.txt"
+    detalle "Y para trabajar dentro:"
+    detalle "  seclab shell --lab ${nombre}"
+
+    avisar_desajuste_vpn "$nombre"
+}
+
+lab_listar() {
+    exigir_env
+    local labs nombre ruta perfil creado archivos total=0
+
+    labs="$(labs_existentes)"
+    titulo "Labs en $(ruta_workspace)"
+    if [ -z "$labs" ]; then
+        detalle "Ninguno todavía. Crea el primero con:"
+        detalle "  seclab lab create htb-forest --vpn vpnhtb"
+        return 0
+    fi
+
+    printf '  %-26s %-10s %-12s %-9s %s\n' "LAB" "VPN" "CREADO" "ARCHIVOS" "RONDAS" >&2
+    local rondas
+    while IFS= read -r nombre; do
+        [ -z "$nombre" ] && continue
+        total=$(( total + 1 ))
+        ruta="$(ruta_lab "$nombre")"
+        perfil="$(perfil_vpn_del_lab "$nombre")"
+        creado="$(grep -m1 '^# Creado:' "${ruta}/scope.txt" 2>/dev/null | cut -d: -f2- | tr -d '[:space:]')"
+        # Los archivos que cuentan son los del trabajo en curso: ni la ficha, ni
+        # el informe, ni lo que haya en _archivo/ de reinicios anteriores. Si se
+        # contara lo archivado, un lab recién reiniciado parecería lleno.
+        archivos="$(find "$ruta" -type f ! -name scope.txt ! -name report.md \
+            ! -path "${ruta}/_archivo/*" 2>/dev/null | grep -c . || true)"
+        rondas="$(find "${ruta}/_archivo" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | grep -c . || true)"
+        printf '  %-26s %-10s %-12s %-9s %s\n' \
+            "$nombre" "${perfil:-—}" "${creado:-—}" "$archivos" "$rondas" >&2
+    done <<< "$labs"
+
+    printf '\n' >&2
+    detalle "${total} lab(s). Entra en uno con: seclab shell --lab NOMBRE"
+    detalle "RONDAS son los reinicios archivados en _archivo/ de cada lab."
+}
+
+# lab reset: devolver un lab a su estado inicial sin perder lo anterior.
+#
+# El objetivo docente es que una práctica se pueda repetir desde cero de forma
+# idéntica. Eso choca con no perder el trabajo hecho, así que no se borra nada:
+# lo anterior se aparta a _archivo/<fecha>/ dentro del propio lab.
+lab_reiniciar() {
+    local nombre="${1:-}" ruta archivo marca subdir movidos=0
+
+    exigir_env
+    validar_slug "$nombre" || exit "$SALIDA_USO"
+
+    ruta="$(ruta_lab "$nombre")"
+    if ! lab_existe "$nombre"; then
+        abortar "No existe el lab '${nombre}'." \
+                "No se ha hecho nada." \
+                "Mira los que hay con 'seclab lab list'."
+    fi
+
+    marca="$(date '+%Y%m%d-%H%M%S')"
+    archivo="${ruta}/_archivo/${marca}"
+
+    titulo "Se va a archivar"
+    detalle "El informe (report.md) y el contenido de: $(echo "$SECLAB_LAB_DIRS" | tr ' ' ',')"
+    detalle "Destino: workspace/${nombre}/_archivo/${marca}/"
+
+    titulo "Se conserva en su sitio"
+    detalle "scope.txt — la ficha del lab: el objetivo y la autorización no cambian"
+    detalle "porque repitas la práctica"
+
+    printf '\n' >&2
+    info "No se borra nada: todo queda en _archivo/ y puedes recuperarlo cuando quieras."
+    printf '\n' >&2
+
+    if ! confirmar "¿Reiniciar el lab '${nombre}'?"; then
+        info "Cancelado. No se ha tocado nada."
+        return 0
+    fi
+
+    titulo "Reiniciando"
+    install -d -m 0700 "$archivo"
+
+    if [ -f "${ruta}/report.md" ]; then
+        mv "${ruta}/report.md" "${archivo}/report.md"
+        movidos=$(( movidos + 1 ))
+    fi
+    for subdir in $SECLAB_LAB_DIRS; do
+        if [ -d "${ruta}/${subdir}" ] && [ -n "$(ls -A "${ruta}/${subdir}" 2>/dev/null)" ]; then
+            mv "${ruta}/${subdir}" "${archivo}/${subdir}"
+            movidos=$(( movidos + 1 ))
+        fi
+        install -d -m 0700 "${ruta}/${subdir}"
+    done
+
+    if [ "$movidos" -eq 0 ]; then
+        rmdir "$archivo" 2>/dev/null || true
+        rmdir "${ruta}/_archivo" 2>/dev/null || true
+        ok "El lab ya estaba limpio; no había nada que archivar"
+    else
+        ok "${movidos} elemento(s) archivados en _archivo/${marca}/"
+    fi
+
+    # El informe vuelve a su plantilla, con los datos de la ficha.
+    expandir_plantilla "${SECLAB_RAIZ}/templates/lab/report.md" \
+        "${ruta}/report.md" "$nombre" \
+        "$(perfil_vpn_del_lab "$nombre")" "$(rangos_del_perfil "$(perfil_vpn_del_lab "$nombre")")"
+    chmod 600 "${ruta}/report.md"
+    ok "Informe nuevo a partir de la plantilla"
+
+    printf '\n' >&2
+    detalle "Los targets vulnerables (DVWA, Juice Shop, WebGoat, AD) llegan en la Fase 12;"
+    detalle "cuando existan, 'lab reset' los devolverá también a su estado inicial."
+    avisar_desajuste_vpn "$nombre"
+}
+
+# -----------------------------------------------------------------------------
+# update
+# -----------------------------------------------------------------------------
+# Traer la versión nueva del repositorio sin destruir el trabajo local, que en
+# un aula es lo que de verdad pasa: el alumno ha tocado su .env, ha probado algo
+# en el Dockerfile o el profesor tiene un parche a medias.
+#
+# Por defecto **no** hace nada si el árbol está sucio: se planta y enseña qué
+# hay modificado. Con --stash lo guarda, actualiza y lo vuelve a aplicar,
+# diciendo en cada paso qué ha hecho. Nunca descarta cambios en silencio.
+cmd_update() {
+    local con_stash=false stash_hecho=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --stash) con_stash=true; shift ;;
+            *) abortar "Opción desconocida para 'update': $1" "" \
+                       "Uso: seclab update [--stash]" ;;
+        esac
+    done
+
+    exigir_env
+
+    if ! existe_comando git || [ ! -d "${SECLAB_RAIZ}/.git" ]; then
+        abortar "Esto no es una copia de trabajo de Git." \
+                "No hay de dónde traer una versión nueva." \
+                "Clona el repositorio del curso en lugar de descargarlo como ZIP."
+    fi
+
+    local rama remoto
+    rama="$(git -C "$SECLAB_RAIZ" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'desconocida')"
+    remoto="$(git -C "$SECLAB_RAIZ" config --get "branch.${rama}.remote" 2>/dev/null || true)"
+    [ -z "$remoto" ] && remoto="$(git -C "$SECLAB_RAIZ" remote | head -1)"
+
+    if [ -z "$remoto" ]; then
+        abortar "El repositorio no tiene ningún remoto configurado." \
+                "No hay de dónde traer una versión nueva." \
+                "Añádelo con: git remote add origin <url del repositorio del curso>"
+    fi
+
+    titulo "Actualizando SecLab"
+    # Un byte más de ancho para «Versión»: printf cuenta bytes y la ó ocupa dos.
+    printf '  %-15s %s\n' "Versión" "$SECLAB_VERSION" >&2
+    printf '  %-14s %s\n' "Rama" "$rama" >&2
+    printf '  %-14s %s\n' "Remoto" "$remoto" >&2
+
+    # --- 1. El árbol de trabajo ---------------------------------------------
+    local sucio
+    sucio="$(git -C "$SECLAB_RAIZ" status --porcelain --untracked-files=no 2>/dev/null)"
+    if [ -n "$sucio" ]; then
+        if [ "$con_stash" = false ]; then
+            printf '\n' >&2
+            printf '%s\n' "${C_GRIS}$(printf '%s\n' "$sucio" | sed 's/^/    /')${C_FIN}" >&2
+            printf '\n' >&2
+            abortar "Tienes cambios sin guardar en el repositorio." \
+                    "No se ha actualizado nada: un 'git pull' encima podría perderlos." \
+                    "Confírmalos ('git commit'), descártalos ('git checkout -- .'), o deja que SecLab los aparte: seclab update --stash"
+        fi
+        info "Apartando tus cambios con git stash"
+        if ! git -C "$SECLAB_RAIZ" stash push --include-untracked \
+                 --message "seclab update $(date '+%Y-%m-%d %H:%M')" >/dev/null 2>&1; then
+            abortar "No se han podido apartar los cambios." \
+                    "No se ha actualizado nada." \
+                    "Revisa el estado con 'git status'."
+        fi
+        stash_hecho=true
+        ok "Cambios guardados en el stash"
+    else
+        ok "El repositorio está limpio"
+    fi
+
+    # --- 2. Traer la versión nueva ------------------------------------------
+    local version_previa commit_previo
+    version_previa="$SECLAB_VERSION"
+    commit_previo="$(git -C "$SECLAB_RAIZ" rev-parse HEAD 2>/dev/null || printf '')"
+
+    info "Consultando ${remoto}"
+    if ! git -C "$SECLAB_RAIZ" fetch --quiet "$remoto" 2>/dev/null; then
+        restaurar_stash "$stash_hecho"
+        abortar "No se ha podido contactar con ${remoto}." \
+                "No se ha actualizado nada." \
+                "Comprueba tu conexión y el acceso al repositorio del curso."
+    fi
+
+    # --ff-only a propósito: si la historia ha divergido, esto no es algo que
+    # deba resolver un comando de actualización a espaldas de nadie.
+    local salida_pull
+    if ! salida_pull="$(git -C "$SECLAB_RAIZ" merge --ff-only "${remoto}/${rama}" 2>&1)"; then
+        restaurar_stash "$stash_hecho"
+        error "Tu rama y la del curso han divergido." \
+              "No se ha actualizado nada." \
+              "Tienes commits propios que no están en ${remoto}. Resuélvelo a mano: git log --oneline ${rama} ^${remoto}/${rama}"
+        printf '%s\n' "${C_GRIS}    ${salida_pull}${C_FIN}" >&2
+        exit "$SALIDA_ERROR"
+    fi
+
+    local commit_nuevo version_nueva
+    commit_nuevo="$(git -C "$SECLAB_RAIZ" rev-parse HEAD 2>/dev/null || printf '')"
+    version_nueva="$(tr -d '[:space:]' < "${SECLAB_RAIZ}/VERSION" 2>/dev/null || printf '%s' "$version_previa")"
+
+    if [ "$commit_previo" = "$commit_nuevo" ]; then
+        restaurar_stash "$stash_hecho"
+        printf '\n' >&2
+        ok "Ya tenías la última versión (${version_nueva})"
+        return 0
+    fi
+
+    ok "Actualizado: $(git -C "$SECLAB_RAIZ" rev-parse --short "$commit_previo")…$(git -C "$SECLAB_RAIZ" rev-parse --short "$commit_nuevo")"
+    printf '  %s\n' "${C_GRIS}$(git -C "$SECLAB_RAIZ" log --oneline "${commit_previo}..${commit_nuevo}" 2>/dev/null | head -8 | sed 's/^/    /')${C_FIN}" >&2
+
+    # --- 3. Devolver los cambios apartados ----------------------------------
+    restaurar_stash "$stash_hecho"
+
+    # --- 4. Novedades de la versión -----------------------------------------
+    if [ "$version_nueva" != "$version_previa" ]; then
+        titulo "Novedades de la versión ${version_nueva}"
+        mostrar_changelog "$version_nueva"
+    fi
+
+    # --- 5. Imagen y servicio -----------------------------------------------
+    # La imagen lleva la versión en la etiqueta, así que un cambio de versión
+    # significa que la que está corriendo ya no es la que toca.
+    local perfil imagen estado_previo
+    perfil="$(perfil_actual)"
+    imagen="$(etiqueta_imagen_de "$perfil" "$version_nueva")"
+    estado_previo="$(estado_contenedor)"
+
+    titulo "Imagen del perfil '${perfil}'"
+    if imagen_existe "$imagen" && imagen_al_dia "$imagen"; then
+        ok "${imagen} ya está al día"
+    else
+        info "Reconstruyendo ${imagen}"
+        escribir_variable "$ARCHIVO_ENV" SECLAB_VERSION "$version_nueva"
+        escribir_variable "$ARCHIVO_ENV" SECLAB_IMAGE "$imagen"
+        escribir_variable "$ARCHIVO_ENV" SECLAB_COMMIT "$(commit_corto)"
+        construir_imagen "$perfil" "$version_nueva"
+    fi
+
+    if [ "$estado_previo" = "running" ]; then
+        titulo "Reiniciando el laboratorio"
+        detalle "Estaba en marcha, así que se reinicia para que use lo nuevo."
+        cmd_stop
+        cmd_start
+    else
+        printf '\n' >&2
+        info "El laboratorio no estaba en marcha. Arráncalo con 'seclab start'."
+    fi
+
+    printf '\n' >&2
+    ok "Actualización terminada"
+    detalle "Comprueba el entorno con 'seclab doctor' si algo no encaja."
+}
+
+# restaurar_stash HECHO
+restaurar_stash() {
+    [ "${1:-false}" = "true" ] || return 0
+    info "Devolviendo tus cambios apartados"
+    if git -C "$SECLAB_RAIZ" stash pop >/dev/null 2>&1; then
+        ok "Tus cambios están de vuelta"
+        return 0
+    fi
+    aviso "Tus cambios no se han podido reaplicar automáticamente."
+    detalle "Siguen guardados y no se han perdido. Míralos con:"
+    detalle "  git stash list"
+    detalle "  git stash show -p stash@{0}"
+    detalle "Y cuando lo tengas claro: git stash pop"
+    return 0
+}
+
+# mostrar_changelog VERSION
+#
+# Se recorta la sección de esa versión del CHANGELOG. Si no aparece —porque la
+# versión nueva todavía está en [No publicado]— se muestra esa sección, que es
+# donde está lo que acaba de llegar.
+mostrar_changelog() {
+    local version="$1" seccion
+    [ -r "${SECLAB_RAIZ}/CHANGELOG.md" ] || { detalle "No hay CHANGELOG.md en el repositorio."; return 0; }
+
+    seccion="$(awk -v v="$version" '
+        $0 ~ "^## \\[" v "\\]" { dentro=1; print; next }
+        dentro && /^## \[/ { exit }
+        dentro { print }
+    ' "${SECLAB_RAIZ}/CHANGELOG.md")"
+
+    if [ -z "$seccion" ]; then
+        seccion="$(awk '
+            /^## \[No publicado\]/ { dentro=1; print; next }
+            dentro && /^## \[/ { exit }
+            dentro { print }
+        ' "${SECLAB_RAIZ}/CHANGELOG.md")"
+    fi
+
+    if [ -z "$seccion" ]; then
+        detalle "El CHANGELOG no tiene una sección para ${version}."
+        return 0
+    fi
+
+    # Sólo los titulares: el changelog completo de una fase son cien líneas y
+    # aquí interesa saber qué ha cambiado, no leerlo entero.
+    printf '%s\n' "$seccion" | grep -E '^(### |- \*\*)' | head -14 | sed 's/^/  /' >&2
+    printf '\n' >&2
+    detalle "Completo en CHANGELOG.md"
+}
+
+# -----------------------------------------------------------------------------
+# seguridad
+# -----------------------------------------------------------------------------
+cmd_seguridad() {
+    exec "${SECLAB_RAIZ}/scripts/verificar-seguridad.sh" "$@"
+}
+
+# -----------------------------------------------------------------------------
+# vpn (Fase 7)
+# -----------------------------------------------------------------------------
+# Recordatorio del modelo de responsabilidad: nada de lo que sigue valida ni
+# bloquea contra qué objetivo se conecta el alumno dentro del túnel. Lo único
+# que se comprueba es el ESTADO/INTERFAZ del túnel y que los rangos de dos
+# perfiles activos a la vez no se solapen, porque sin eso el enrutamiento
+# sería impredecible, no por ninguna política de destinos.
+#
+# El CLI del host ya NO reimplementa la lógica de túneles/killswitch: vive
+# dentro de 'lab' (docker/shell/seclab-vpn.sh, instalado como
+# /usr/local/bin/seclab-vpn). Estos comandos sólo hacen las comprobaciones que
+# se pueden hacer sin hablar con el contenedor y delegan con `docker exec`
+# (vpn_exec, más abajo) — mismo patrón que usa 'escritorio_restablecer' para
+# otras operaciones privilegiadas puntuales dentro de 'lab'.
+cmd_vpn() {
+    local sub="${1:-ayuda}"; shift || true
+    case "$sub" in
+        list|listar)    vpn_list ;;
+        up)             vpn_up "$@" ;;
+        status|estado)  vpn_status "$@" ;;
+        routes|rutas)   vpn_routes ;;
+        logs)           vpn_logs "$@" ;;
+        down|bajar)     vpn_down "$@" ;;
+        ayuda|-h|--help)
+            cat >&2 <<AYUDA
+${C_NEGRITA}seclab vpn${C_FIN} — VPN autorizada multiperfil
+
+  list                      Perfiles conocidos, con su .ovpn/perfil.env y cuáles están activos
+  up PERFIL                 Levanta un perfil ($(perfiles_vpn_validos | tr ' ' '|')); pueden estar los tres a la vez
+  status [PERFIL]           Estado de uno o de todos los perfiles conocidos
+  routes                    Rutas activas hacia los túneles ahora mismo
+  logs PERFIL               Registro de OpenVPN de ese perfil
+  down [PERFIL]             Baja ese perfil, o todos los activos si se omite
+
+El único motivo real de rechazo al levantar un perfil es que sus rangos se
+solapen con los de otro ya activo: con rangos solapados no hay forma de
+decidir por qué túnel debe salir un paquete.
+
+Detalle completo en docs/vpn.md.
+AYUDA
+            ;;
+        *) abortar "Subcomando de vpn no reconocido: ${sub}" \
+                   "No se ha hecho nada." \
+                   "Ejecuta 'seclab vpn ayuda'." ;;
+    esac
+}
+
+# vpn_exec SUBCOMANDO... -> `docker exec -u root` en 'lab' de 'seclab-vpn', el
+# script interno que vive en la imagen. Necesita root porque manipula
+# interfaces, rutas e iptables (mismo motivo que docker-compose.vpn.yml le
+# concede NET_ADMIN y /dev/net/tun sólo a 'lab', nunca al usuario de
+# laboratorio sin más).
+vpn_exec() {
+    local id
+    id="$(id_contenedor)"
+    if [ -z "$id" ] || [ "$(estado_contenedor)" != "running" ]; then
+        abortar "El laboratorio no está en marcha." \
+                "No se puede hablar con el gestor de VPN: vive dentro de 'lab'." \
+                "Arráncalo con: seclab start"
+    fi
+    docker exec -u root "$id" seclab-vpn "$@"
+}
+
+vpn_list() {
+    exigir_env
+    local perfil dir ovpn envf activos marca
+    activos="$(vpn_perfiles_activos)"
+
+    titulo "Perfiles de VPN"
+    printf '  %-10s %-8s %-12s %s\n' "PERFIL" ".OVPN" "PERFIL.ENV" "ESTADO" >&2
+    for perfil in $(perfiles_vpn_validos); do
+        dir="$(directorio_vpn "$perfil")"
+        if ovpn_configurado "$perfil" >/dev/null 2>&1; then ovpn="sí"; else ovpn="no"; fi
+        [ -f "$(archivo_perfil_env "$perfil")" ] && envf="sí" || envf="no"
+        if printf '%s\n' "$activos" | grep -qx "$perfil"; then
+            marca="${C_VERDE}activo${C_FIN}"
+        else
+            marca="${C_GRIS}—${C_FIN}"
+        fi
+        printf '  %-10s %-8s %-12s %s\n' "$perfil" "$ovpn" "$envf" "$marca" >&2
+    done
+    printf '\n' >&2
+
+    if [ -z "$activos" ]; then
+        detalle "Ningún perfil activo. Arranca uno con: seclab vpn up <perfil>"
+    fi
+    detalle "Coloca el .ovpn y perfil.env en vpn/<perfil>/ (ver templates/vpn/<perfil>/README.md)."
+}
+
+vpn_up() {
+    exigir_env
+    local perfil="${1:-}"
+    [ -z "$perfil" ] && abortar "Falta el perfil." \
+        "No se ha levantado nada." \
+        "Uso: seclab vpn up PERFIL. Perfiles: $(perfiles_vpn_validos)"
+    perfil_vpn_valido "$perfil" || abortar "Perfil de VPN desconocido: ${perfil}" \
+        "No se ha levantado nada." \
+        "Perfiles válidos: $(perfiles_vpn_validos)"
+
+    # Las comprobaciones que no necesitan hablar con el contenedor se hacen
+    # aquí, con el mensaje exacto de qué falta en el host (rutas de archivos
+    # del host, no del contenedor). El resto —solape de rangos con otro
+    # perfil ya activo, rutas, killswitch, arranque de OpenVPN— lo hace
+    # 'seclab-vpn up' dentro de 'lab'.
+    local dir
+    dir="$(directorio_vpn "$perfil")"
+    [ -d "$dir" ] || abortar "No existe ${dir}." \
+        "No se ha levantado nada." \
+        "Ejecuta 'seclab init', que crea vpn/<perfil>/ desde templates/vpn/."
+    if ! ovpn_configurado "$perfil" >/dev/null 2>&1; then
+        abortar "Falta el .ovpn de '${perfil}', o SECLAB_VPN_CONFIG no lo declara bien." \
+                "No hay nada que conectar." \
+                "Coloca el archivo en ${dir}/ y revisa SECLAB_VPN_CONFIG en ${dir}/perfil.env (ver ${dir}/README.md)."
+    fi
+    if [ -z "$(rangos_reales_del_perfil "$perfil")" ]; then
+        abortar "SECLAB_VPN_RANGOS está vacío en ${dir}/perfil.env." \
+                "Con --route-nopull y sin rangos declarados, el túnel no enrutaría nada." \
+                "Conecta manualmente una vez para ver qué negocia la plataforma, o consulta docs/vpn.md."
+    fi
+    comprobar_permisos_vpn "$perfil" || true
+
+    # SECLAB_HABILITAR_VPN gatea si 'lab' tiene NET_ADMIN/dev/net/tun
+    # concedidos (docker-compose.vpn.yml, ver compose_seclab en lib/docker.sh).
+    # En false por defecto: ningún 'lab' arranca con esas capacidades hasta que
+    # alguien pide usar una VPN de verdad. Activarla exige recrear 'lab', así
+    # que se pide confirmación — se pierde cualquier shell abierta ahora mismo,
+    # no el directorio personal ni el workspace.
+    if [ "$(leer_variable "$ARCHIVO_ENV" SECLAB_HABILITAR_VPN)" != "true" ]; then
+        titulo "Habilitando la VPN en 'lab'"
+        aviso "SECLAB_HABILITAR_VPN está en false: 'lab' todavía no tiene NET_ADMIN ni /dev/net/tun."
+        detalle "Concedérselos exige recrear el contenedor. Tu directorio personal y tu"
+        detalle "workspace no se tocan; sí se pierde cualquier shell o proceso que tuvieras"
+        detalle "abierto dentro ahora mismo."
+        printf '\n' >&2
+        if ! confirmar "¿Recrear 'lab' con la VPN habilitada?"; then
+            abortar "No se ha levantado nada." \
+                    "" \
+                    "Actívalo cuando quieras: SECLAB_HABILITAR_VPN=true en .env, y 'seclab restart'."
+        fi
+        escribir_variable "$ARCHIVO_ENV" SECLAB_HABILITAR_VPN true
+        info "Recreando 'lab' con NET_ADMIN y /dev/net/tun concedidos"
+        if ! compose_seclab up -d lab; then
+            escribir_variable "$ARCHIVO_ENV" SECLAB_HABILITAR_VPN false
+            abortar "No se ha podido recrear 'lab' con la VPN habilitada." \
+                    "SECLAB_HABILITAR_VPN se ha revertido a false; no ha quedado a medias." \
+                    "Revisa la causa con 'docker compose logs lab'."
+        fi
+        printf '  Esperando a que el laboratorio esté sano de nuevo' >&2
+        esperar_salud 60 >/dev/null 2>&1
+        printf '\n' >&2
+        ok "'lab' recreado."
+    fi
+
+    titulo "Levantando el perfil '${perfil}'"
+    if ! vpn_exec up "$perfil"; then
+        abortar "No se ha podido levantar el perfil '${perfil}'." \
+                "Revisa el detalle mostrado arriba." \
+                "También puedes mirar: seclab vpn logs ${perfil}"
+    fi
+
+    printf '\n' >&2
+    ok "Perfil '${perfil}' procesado."
+    detalle "Comprueba el estado con: seclab vpn status ${perfil}"
+}
+
+vpn_status() {
+    exigir_env
+    titulo "Estado de la VPN"
+    vpn_exec status "$@" >&2
+}
+
+vpn_routes() {
+    exigir_env
+    titulo "Rutas activas hacia los túneles"
+    vpn_exec routes | sed 's/^/  /' >&2
+}
+
+vpn_logs() {
+    local perfil="${1:-}"
+    exigir_env
+    [ -z "$perfil" ] && abortar "Indica qué perfil." \
+        "" "Uso: seclab vpn logs PERFIL. Perfiles: $(perfiles_vpn_validos)"
+    perfil_vpn_valido "$perfil" || abortar "Perfil de VPN desconocido: ${perfil}" \
+        "" "Perfiles válidos: $(perfiles_vpn_validos)"
+
+    # Los logs de OpenVPN no incluyen el contenido del .ovpn ni credenciales
+    # (docker/shell/seclab-vpn.sh nunca los pasa a --log); esto no filtra nada
+    # nuevo.
+    vpn_exec logs "$perfil"
+}
+
+vpn_down() {
+    exigir_env
+    local perfil="${1:-}"
+    if [ -n "$perfil" ]; then
+        perfil_vpn_valido "$perfil" || abortar "Perfil de VPN desconocido: ${perfil}" \
+            "" "Perfiles válidos: $(perfiles_vpn_validos)"
+        titulo "Bajando el perfil '${perfil}'"
+    else
+        titulo "Bajando todos los perfiles de VPN activos"
+    fi
+
+    vpn_exec down ${perfil:+"$perfil"}
+    ok "Hecho."
+}
+
+# -----------------------------------------------------------------------------
+# Despacho
+# -----------------------------------------------------------------------------
+main() {
+    if [ $# -eq 0 ]; then
+        mostrar_ayuda
+        exit "$SALIDA_USO"
+    fi
+
+    local comando="$1"
+    shift
+
+    case "$comando" in
+        ayuda|help|-h|--help)  mostrar_ayuda ;;
+        version|--version|-v)  printf 'seclab %s (%s)\n' "$SECLAB_VERSION" "$(commit_corto)" ;;
+        seguridad)             cmd_seguridad "$@" ;;
+        limpiar)               cmd_limpiar "$@" ;;
+        doctor)                cmd_doctor "$@" ;;
+        init)                  cmd_init "$@" ;;
+        start)                 cmd_start "$@" ;;
+        stop)                  cmd_stop "$@" ;;
+        restart)               cmd_restart "$@" ;;
+        status)                cmd_status "$@" ;;
+        shell)                 cmd_shell "$@" ;;
+        logs)                  cmd_logs "$@" ;;
+        escritorio)            cmd_escritorio "$@" ;;
+        image)                 cmd_image "$@" ;;
+
+        backup)                cmd_backup "$@" ;;
+        restore)               cmd_restore "$@" ;;
+
+        open)                  cmd_open "$@" ;;
+        lab)                   cmd_lab "$@" ;;
+        update)                cmd_update "$@" ;;
+        vpn)                    cmd_vpn "$@" ;;
+        mcp)       no_implementado "mcp" 13 ;;
+        cloud)     no_implementado "cloud" 10 ;;
+
+        *)
+            error "Comando desconocido: ${comando}" \
+                  "No se ha ejecutado nada." \
+                  "Ejecuta 'seclab ayuda' para ver los comandos disponibles."
+            exit "$SALIDA_USO"
+            ;;
+    esac
+}
+
+main "$@"

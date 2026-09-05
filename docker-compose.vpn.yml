@@ -1,0 +1,58 @@
+# =============================================================================
+# SecLab — VPN autorizada multiperfil (Fase 7)
+# =============================================================================
+# Ya NO declara servicios propios. El diseño anterior (un contenedor por
+# perfil — vpn-htb, vpn-thm, vpn-cli — unido a 'lab' con
+# `network_mode: service:X`) se sustituyó por uno más simple: OpenVPN e
+# iptables viven DENTRO de la imagen de 'lab' (ver docker/Dockerfile,
+# docker/paquetes-lite.txt), y este archivo sólo añade a 'lab' lo mínimo que
+# hace falta para manipularlos:
+#
+#   - cap_add: NET_ADMIN       manipular interfaces y rutas (igual que exigía
+#                               el contenedor de VPN dedicado; ahora se
+#                               concede al propio 'lab', sólo cuando este
+#                               override está aplicado).
+#   - devices: /dev/net/tun    crear las interfaces TUN de cada perfil
+#                               (tun-htb, tun-thm, tun-cli).
+#
+# 'lab' NO cambia de `network_mode`, NO pierde sus `ports` ni sus `networks`:
+# sigue siendo el mismo contenedor, en el mismo bridge, con el mismo SSH
+# publicado, arriba o abajo esté cualquier túnel. No hay `!reset` que aplicar
+# aquí porque no hay nada que resetear.
+#
+# El montaje de sólo lectura de vpn/ (los tres perfiles) ya vive en
+# docker-compose.yml de forma incondicional (`./vpn:/etc/seclab/vpn:ro`): así
+# 'seclab vpn list' puede leer qué hay configurado aunque este override no
+# esté aplicado. Repetirlo aquí produciría un mismo punto de montaje declarado
+# dos veces, que Docker Compose rechaza.
+#
+# Este archivo sólo se añade a la composición cuando SECLAB_HABILITAR_VPN=true
+# en .env (ver compose_seclab en lib/docker.sh). En false, que es el valor por
+# defecto, 'lab' ni siquiera tiene NET_ADMIN ni /dev/net/tun: no hace falta si
+# nunca vas a usar una VPN de plataforma. 'seclab vpn up' activa la variable
+# solo la primera vez que hace falta, con confirmación, porque exige recrear
+# 'lab' (ver vpn_up en bin/seclab).
+#
+# Por qué el cambio de diseño (decisión del dueño del proyecto, no un
+# accidente): un contenedor de VPN aparte no protegía de nada que compartir la
+# interfaz TUN dentro de 'lab' no resolviera igual — quien más comparte la
+# misma VPN de plataforma (HTB, THM, un cliente) puede alcanzar por esa
+# interfaz a cualquiera que la use, sin que importe en qué contenedor viva.
+# La mitigación real es una regla de firewall sobre la interfaz del túnel
+# (killswitch de entrada, ver docker/shell/seclab-vpn.sh), no una topología de
+# contenedores distinta. Con este diseño, además, los tres perfiles pueden
+# estar arriba a la vez de verdad — el anterior sólo podía unir 'lab' al
+# espacio de red de uno de ellos.
+#
+# El CLI (`bin/seclab`, `vpn_exec()`) sigue usando este archivo sólo cuando
+# alguien va a operar la VPN: `docker exec -u root lab seclab-vpn ...`
+# necesita que 'lab' tenga NET_ADMIN y el dispositivo TUN concedidos. Ver
+# `compose_seclab` en lib/docker.sh.
+# =============================================================================
+
+services:
+  lab:
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun

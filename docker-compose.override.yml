@@ -1,0 +1,81 @@
+# =============================================================================
+# Override local — NO se versiona con cambios personales
+# =============================================================================
+# Docker Compose carga este archivo automáticamente si existe. Úsalo para
+# ajustes de tu máquina que no deban afectar al resto de la clase: mapear otro
+# puerto, montar un directorio adicional, subir un límite de memoria.
+#
+# Se entrega vacío a propósito. Descomenta lo que necesites.
+#
+# Los overrides funcionales de SecLab (VPN, targets vulnerables, MCP, Tailscale)
+# son archivos aparte que el CLI activa de forma explícita:
+#   docker-compose.vpn.yml       (Fase 7)
+#   docker-compose.targets.yml   (Fase 12)
+#   docker-compose.mcp.yml       (Fase 13)
+# =============================================================================
+
+# services:
+#   lab:
+#     ports:
+#       - "127.0.0.1:2223:22"
+#     deploy:
+#       resources:
+#         limits:
+#           memory: 8g
+
+# =============================================================================
+# Modo auditoría de LAN local (network_mode: host) — OPCIONAL, sólo tu máquina
+# =============================================================================
+# Por defecto 'lab' vive en el bridge de Docker (`seclab-net`): sale a tu red
+# local igual que a Internet, vía NAT del host, y eso ya te sirve para la
+# mayoría de auditorías (nmap por TCP/UDP/ICMP, enumeración de servicios).
+#
+# Lo que el bridge NO te da es visibilidad de capa 2: descubrimiento por ARP
+# (`nmap -sn`), tráfico de broadcast/multicast, o "estar" en el mismo segmento
+# físico que tus dispositivos. Para eso, `lab` necesita la propia pila de red
+# del host, no una traducida por NAT.
+#
+# Descomenta este bloque SÓLO si necesitas eso y entiendes el precio:
+#
+#   1. 'lab' deja de tener su propia red aislada: comparte tarjetas, tablas de
+#      rutas y espacio de puertos con tu máquina, tal cual. Dos capacidades ya
+#      te sobran para esto (NET_RAW/NET_BIND_SERVICE ya están concedidas), no
+#      hace falta tocar `cap_add`.
+#   2. El SSH del laboratorio deja de pasar por el mapeo de puertos de Compose
+#      (SECLAB_PUERTO_SSH deja de aplicar): sshd escucha directamente en el
+#      puerto 22 de TU máquina, en TODAS sus interfaces — ya no sólo en
+#      127.0.0.1. Rompe a propósito la regla "servicios ligados a 127.0.0.1
+#      por defecto"; es tu decisión consciente, no algo que SecLab active solo.
+#      Si tu host de Linux ya tiene su propio sshd en el 22, hay conflicto de
+#      puerto: para el tuyo o cambia de máquina para este modo.
+#   3. `seclab seguridad` seguirá marcando esto como fallo (network_mode: host
+#      "elimina el aislamiento de red") cada vez que lo ejecutes. Es correcto
+#      que lo haga: es un recordatorio del compromiso que aceptaste, no un
+#      error tuyo que debas silenciar.
+#   4. `network_mode: host` sólo funciona con la semántica esperada en Linux.
+#      **Comprobado en macOS con Docker Desktop: NO sirve para ver tu LAN
+#      física.** El contenedor recibe la red de la VM de Docker Desktop
+#      (`192.168.65.0/24` en la máquina de prueba), no la de tu Mac. `nmap -sn`
+#      contra esa red obtiene respuestas ARP, pero son de la propia
+#      infraestructura de la VM (mismo MAC en varias IPs), no de dispositivos
+#      reales — ver TESTING_GAPS.md, Fase 7, para el detalle. En Linux nativo
+#      debería funcionar como se espera (comparte la pila de red real del
+#      host), pero no se ha probado ahí todavía. Para auditar tu LAN física
+#      desde macOS, ejecuta la herramienta de descubrimiento directamente en
+#      el host (tu Mac), no dentro del contenedor.
+#   5. Interacción con la VPN (Fase 7): ya NO aplica la advertencia de
+#      prioridad que existía en versiones anteriores de este comentario. El
+#      diseño actual de docker-compose.vpn.yml sólo añade a 'lab' cap_add:
+#      NET_ADMIN y devices: /dev/net/tun — no toca `network_mode` ni `ports`
+#      ni `networks` — así que este bloque y una VPN activa conviven sin
+#      conflicto ni prioridad especial: puedes tener 'lab' en `network_mode:
+#      host` Y un túnel de plataforma arriba al mismo tiempo. De hecho puede
+#      ser justo lo que quieras: capa 2 de tu LAN por un lado, la red de HTB o
+#      de un cliente por el túnel. Ver docs/arquitectura.md, sección "Modo
+#      auditoría de LAN local".
+#
+# services:
+#   lab:
+#     network_mode: host
+#     ports: !reset []
+#     networks: !reset []

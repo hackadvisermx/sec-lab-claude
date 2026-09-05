@@ -1,0 +1,93 @@
+# =============================================================================
+# SecLab — configuración de zsh
+# =============================================================================
+# Este archivo vive en la imagen (/opt/seclab/shell/zshrc) y el ~/.zshrc del
+# usuario sólo lo carga. Así, al reconstruir la imagen, la configuración se
+# actualiza sola: el volumen del directorio personal no se queda con una copia
+# vieja, que es un problema real con los volúmenes nombrados de Docker.
+#
+# Para personalizarlo, edita ~/.zshrc.local: se carga al final y no se toca
+# nunca al actualizar.
+# =============================================================================
+
+# --- Oh My Zsh ---------------------------------------------------------------
+export ZSH="/opt/seclab/shell/oh-my-zsh"
+export ZSH_CUSTOM="/opt/seclab/shell/custom"
+
+# Mismo tema que en el host del profesor, y sin glifos especiales: se ve igual
+# de bien en una terminal sin Nerd Font.
+ZSH_THEME="${SECLAB_ZSH_TEMA:-robbyrussell}"
+
+# Las versiones están fijadas por commit en el Dockerfile. Que Oh My Zsh se
+# actualice solo rompería esa reproducibilidad sin avisar.
+DISABLE_AUTO_UPDATE="true"
+DISABLE_UPDATE_PROMPT="true"
+ZSH_DISABLE_COMPFIX="true"
+
+plugins=(
+    git                        # atajos y estado del repositorio
+    sudo                       # Esc Esc repite el último comando con sudo
+    docker
+    tmux
+    extract                    # 'x archivo': descomprime cualquier formato
+    colored-man-pages
+    command-not-found
+    history-substring-search   # busca en el historial con las flechas
+    fzf
+    zsh-autosuggestions        # sugiere a partir del historial
+    zsh-syntax-highlighting    # colorea el comando mientras se escribe
+)
+
+source "$ZSH/oh-my-zsh.sh"
+
+# --- Historial ---------------------------------------------------------------
+# El historial es material de trabajo: de ahí sale media metodología cuando toca
+# escribir el informe. Amplio, sin duplicados y compartido entre paneles.
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=50000
+SAVEHIST=50000
+setopt HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS HIST_VERIFY
+setopt SHARE_HISTORY INC_APPEND_HISTORY EXTENDED_HISTORY
+
+# --- Entorno -----------------------------------------------------------------
+export EDITOR="${EDITOR:-vim}"
+export PAGER="${PAGER:-less}"
+export LANG="${LANG:-C.UTF-8}"
+export PATH="$HOME/.local/bin:/opt/seclab/bin:$PATH"
+
+# --- Atajos ------------------------------------------------------------------
+alias ll='ls -lah'
+alias la='ls -A'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ws='cd /workspace'
+alias tools='herramientas'
+
+# --- tmux: entrar directamente en una sesión persistente ---------------------
+# Adjuntar-o-crear, no una sesión nueva cada vez. La razón de usar tmux en un
+# laboratorio es que una VPN que se cae o un SSH que se corta no se lleven por
+# delante el trabajo en curso; crear una sesión nueva en cada conexión anularía
+# esa ventaja y dejaría sesiones huérfanas acumulándose.
+#
+# Se desactiva con SECLAB_TMUX_AUTO=false para quien prefiera un shell pelado.
+if [[ -o interactive ]] \
+   && [[ -z "$TMUX" ]] \
+   && [[ "${SECLAB_TMUX_AUTO:-true}" == "true" ]] \
+   && command -v tmux >/dev/null 2>&1; then
+    # Si tmux fallara, se sigue con un shell normal en lugar de dejar al alumno
+    # fuera del contenedor sin explicación.
+    if tmux new-session -A -s seclab; then
+        exit
+    fi
+    echo "tmux no pudo arrancar; continúas en un shell normal." >&2
+fi
+
+# --- Banner ------------------------------------------------------------------
+# Se imprime dentro de tmux, no antes: si no, saldría dos veces.
+if [[ -o interactive ]] && [[ -z "$SECLAB_BANNER_MOSTRADO" ]]; then
+    export SECLAB_BANNER_MOSTRADO=1
+    [ -x /usr/local/bin/seclab-banner ] && /usr/local/bin/seclab-banner
+fi
+
+# --- Personalización del usuario --------------------------------------------
+[ -r "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"

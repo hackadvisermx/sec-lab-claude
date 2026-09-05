@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Firefox ESR
+GenericName=Navegador web
+Comment=Navegador del laboratorio, para trabajar contra los targets de prácticas
+Exec=/usr/local/bin/firefox %u
+Icon=/opt/firefox/browser/chrome/icons/default/default128.png
+Terminal=false
+StartupNotify=true
+StartupWMClass=firefox-esr
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+Keywords=navegador;web;internet;browser;firefox;

@@ -1,0 +1,62 @@
+# Paquetes del perfil `desktop`: escritorio XFCE, acceso por navegador y editor.
+# Se instalan SOBRE los de paquetes-lite.txt, no en su lugar.
+#
+# El escritorio existe para lo que no se puede hacer en una terminal: Burp
+# Suite, un navegador dentro del laboratorio, o ver una captura de Wireshark.
+# Todo lo demás se sigue haciendo mejor por SSH.
+#
+# Firefox y code-server NO están aquí: los paquetes `firefox` y
+# `chromium-browser` de Ubuntu son transiciones a snap, que no funciona dentro
+# de un contenedor, y code-server no está en el repositorio. Los dos se
+# instalan desde su publicación oficial con versión fijada y checksum
+# verificado; ver docs/politica-herramientas.md.
+
+# --- Escritorio ---
+# xfce4 es un metapaquete: arrastra el gestor de ventanas, el panel y el
+# escritorio. Se elige XFCE por ligero: un escritorio pesado dentro de un
+# contenedor que ya vive en una VM se nota enseguida.
+xfce4
+xfce4-terminal
+mousepad
+dbus-x11
+xdg-utils
+
+# --- Servidor X con VNC ---
+# Xvnc de TigerVNC es servidor X y servidor VNC en un solo proceso. La
+# alternativa (Xvfb + x11vnc) son dos procesos y dos formas de fallar.
+tigervnc-standalone-server
+tigervnc-common
+# vncpasswd vive en tigervnc-tools, no en el servidor. Sin él no hay forma de
+# escribir el archivo de contraseña que Xvnc espera, y el arranque falla con un
+# «command not found» a mitad del entrypoint.
+tigervnc-tools
+x11-utils
+x11-xserver-utils
+xauth
+
+# --- Acceso por navegador ---
+# noVNC es el cliente VNC en el navegador; websockify hace el puente entre el
+# WebSocket del navegador y el puerto TCP de Xvnc.
+novnc
+websockify
+
+# --- Aceleración y fuentes ---
+libgl1-mesa-dri
+fonts-dejavu-core
+fonts-liberation
+# La barra de estado de tmux usa emoji (🚀 📂 🕒). Sin una fuente que los
+# tenga, dentro del escritorio salen como cuadros: los separadores Powerline
+# los cubre la Nerd Font, pero los emoji no.
+fonts-noto-color-emoji
+
+# --- Descompresión de los paquetes fijados ---
+# Los tarballs oficiales de Mozilla y de Nerd Fonts vienen en .tar.xz, y la
+# imagen base de Ubuntu no trae xz: sin esto, `tar -xJf` falla con un código de
+# salida 2 que no dice por qué.
+xz-utils
+
+# --- Dependencias de ejecución de Firefox ---
+# El tarball oficial de Mozilla no declara dependencias: hay que ponerlas a
+# mano. Las de GTK y X11 las trae XFCE; estas dos, no.
+libdbus-glib-1-2
+libasound2t64

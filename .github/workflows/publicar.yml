@@ -62,6 +62,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Liberar espacio en disco del runner
+        # El build multi-arch (amd64+arm64) de un perfil pesado (full,
+        # full-msf con Metasploit) agota el disco por defecto del runner
+        # hospedado de GitHub (~14 GB libres de partida, con Android SDK,
+        # .NET y toolchains que SecLab nunca usa ya ocupando buena parte).
+        # Encontrado en esta sesión: el perfil 'desktop' agotó el disco a
+        # mitad del build de SBOM (0 MB libres). Se borra sólo lo que ocupa
+        # espacio y no hace falta para construir/firmar/escanear una imagen
+        # Docker, nunca algo que el propio job vaya a necesitar después.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
       - name: Metadatos de versión
         id: meta
         run: |
@@ -157,6 +173,22 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Liberar espacio en disco del runner
+        # El build multi-arch (amd64+arm64) de un perfil pesado (full,
+        # full-msf con Metasploit) agota el disco por defecto del runner
+        # hospedado de GitHub (~14 GB libres de partida, con Android SDK,
+        # .NET y toolchains que SecLab nunca usa ya ocupando buena parte).
+        # Encontrado en esta sesión: el perfil 'desktop' agotó el disco a
+        # mitad del build de SBOM (0 MB libres). Se borra sólo lo que ocupa
+        # espacio y no hace falta para construir/firmar/escanear una imagen
+        # Docker, nunca algo que el propio job vaya a necesitar después.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          docker image prune -af >/dev/null 2>&1 || true
+          df -h /
 
       - name: Metadatos de versión
         id: meta

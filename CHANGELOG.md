@@ -9,6 +9,36 @@ proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
 Fases 3, 4, 5, 6, 7, 8, 9, 10 y 11 entregadas.
 
+### Cambiado — Fase 8, el escaneo de imágenes (Trivy) deja de bloquear la publicación
+
+Decisión explícita del dueño del proyecto, tras publicar `full-msf` de
+verdad y encontrar que el kernel (`linux-libc-dev`, necesario en tiempo de
+ejecución para `pwntools`/`ropper`) y la librería estándar de Go embebida en
+`pspy64` (única versión publicada, sin parche disponible) le iban saliendo
+CVEs `CRITICAL` distintas en cada reconstrucción: bloquear la publicación por
+ello era perseguir IDs nuevos para siempre sin arreglar nada de fondo, y
+además aplicaba a `full`/`full-msf` la misma vara que a una imagen de
+aplicación normal, cuando esos perfiles incluyen herramientas ofensivas **a
+propósito**.
+
+- `.github/workflows/publicar.yml` y `ci.yml`: Trivy corre siempre
+  (`scanners: vuln`, sin el escáner de secretos — ver más abajo por qué) pero
+  `exit-code: 0` en todos los casos: nunca bloquea, en ningún perfil.
+- El informe se sube como artefacto descargable del workflow
+  (`trivy-<perfil>.txt`, incluido `trivy-full-msf.txt`, 90 días de
+  retención), para que quien despliegue la imagen lo revise antes de usarla
+  — mismo modelo de responsabilidad que el resto del proyecto
+  (`docs/uso-autorizado.md`, actualizado con esta decisión).
+- **`scanners: vuln`** (sin el escáner de secretos, activo por defecto):
+  marcaba como "CRITICAL: Stripe Secret Key" contenido de los propios
+  wordlists de Metasploit (pensados para auditar objetivos, no secretos
+  reales) y de sus specs de pruebas unitarias. Encontrado en la misma sesión
+  de publicación real.
+- `.trivyignore` se conserva como documentación histórica de los hallazgos ya
+  revisados (`CVE-2026-53398`, `CVE-2026-64535`, `CVE-2026-64564` en
+  `linux-libc-dev`; `CVE-2023-24538`, `CVE-2023-24540` en `pspy64`), aunque
+  ya no sea necesario para que la publicación pase.
+
 ### Añadido — Fase 11, GCP y Oracle Cloud (opcional)
 
 - **`terraform/gcp/`**: módulo Terraform para GCP (Compute Engine), mismo

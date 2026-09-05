@@ -224,9 +224,14 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           exit-code: '0'
-        # exit-code 0: el escaneo informa pero no bloquea la CI de rama/PR.
-        # publicar.yml SÍ trata el hallazgo CRITICAL como bloqueante antes de
-        # publicar (ver ese workflow y docs/ci.md).
+        # exit-code 0: informativo, nunca bloquea — igual que en publicar.yml
+        # (decisión explícita del dueño del proyecto: un escáner genérico no
+        # puede distinguir un defecto accidental de las herramientas
+        # ofensivas que full/full-msf incluyen a propósito; bloquear por eso
+        # es perseguir CVEs del kernel/Go una por una sin arreglar nada de
+        # fondo). Los hallazgos quedan documentados como artefacto
+        # descargable en publicar.yml; revisarlos y decidir si una imagen es
+        # apta es responsabilidad de quien la despliega (docs/uso-autorizado.md).
       - name: Limpieza
         if: always()
         run: |

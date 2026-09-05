@@ -1,10 +1,14 @@
 # =============================================================================
 # SecLab — excepciones documentadas de Trivy
 # =============================================================================
-# Cada línea es una CVE que Trivy detecta pero que SecLab considera no
-# explotable en el contexto de un contenedor, con su justificación. Nunca se
-# añade una entrada aquí sin explicar por qué, y nunca para silenciar algo que
-# de verdad afecte a lo que corre dentro del contenedor.
+# El escaneo de Trivy ya NO bloquea ninguna publicación (ver docs/ci.md,
+# "Escaneo de imágenes"): full/full-msf incluyen herramientas ofensivas a
+# propósito, y un escáner genérico no distingue eso de un defecto accidental.
+# Este archivo sigue existiendo para que el informe (subido como artefacto en
+# cada publicación) no se llene de ruido sobre hallazgos ya revisados. Cada
+# línea es una CVE que Trivy detecta pero que SecLab considera no explotable
+# en el contexto de un contenedor, con su justificación. Nunca se añade una
+# entrada aquí sin explicar por qué.
 # =============================================================================
 
 # linux-libc-dev sólo aporta las CABECERAS de la API del kernel de Linux para
@@ -25,16 +29,20 @@
 # se añade con esta misma justificación, no una nueva por revisar cada vez.
 CVE-2026-53398
 CVE-2026-64535
+CVE-2026-64564
 
 # pspy64 (privesc, docker/Dockerfile) es un binario Go estático de
 # DominicBreuker/pspy v1.2.1 (2023-01-17) — la ÚLTIMA versión publicada; no
 # hay una más reciente a la que fijar el pin (comprobado contra la lista de
 # releases del proyecto). Arrastra la librería estándar de Go de esa fecha,
-# con CVE-2023-24538 (bug de escapado en html/template). pspy es una
+# con varias CVEs de la familia html/template (bugs de escapado). pspy es una
 # herramienta de línea de comandos que sólo imprime eventos de procesos y
 # archivos por stdout: no usa html/template en ningún punto de su código, así
 # que el código vulnerable está presente en el binario pero no hay ninguna
-# vía de que pspy lo ejecute. Si el proyecto upstream publica una versión
-# nueva, hay que revisar si sigue aplicando esta excepción o si conviene
-# simplemente subir el pin.
+# vía de que pspy lo ejecute. Van saliendo IDs distintos de la misma familia
+# en cada reconstrucción (Go 1.18.1 es de 2022): mismo razonamiento para
+# cualquiera que aparezca. Si el proyecto upstream publica una versión nueva,
+# hay que revisar si sigue aplicando esta excepción o si conviene simplemente
+# subir el pin.
 CVE-2023-24538
+CVE-2023-24540

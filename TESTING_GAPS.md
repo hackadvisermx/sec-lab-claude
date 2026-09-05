@@ -500,16 +500,31 @@ versión con una dependencia interna ya borrada río arriba), el runner
 quedándose sin disco al construir multi-arch un perfil pesado, un bug de
 permisos de archivo en `scripts/ci/probar-vpn.sh` (UID distinto entre quien
 genera un archivo dentro de un contenedor y quien lo lee después en el
-host), y dos CVEs `CRITICAL` reales bloqueando la publicación (documentadas
-y justificadas en `.trivyignore`, ver `docs/ci.md`). **Pendiente real, no
-resuelto hoy**: el paquete `linux-libc-dev` (cabeceras del kernel, arrastrado
-por las herramientas de compilación de `full`/`full-msf`) va a seguir
-acumulando CVEs nuevas con el tiempo porque Ubuntu se las va asignando al
-paquete según pasan los años; la solución de raíz es un build multi-etapa
-que compile en una etapa aparte y no lleve el compilador ni las cabeceras a
-la imagen final, evitando el problema por completo en vez de ir añadiendo
-una excepción por CVE. Queda como trabajo futuro, no bloqueante para esta
-fase.
+host), y el escáner de secretos de Trivy marcando como filtrados los propios
+wordlists/specs de Metasploit (corregido restringiendo a `scanners: vuln`).
+
+**Cada reconstrucción sacaba una CVE `CRITICAL` nueva y distinta** en
+`linux-libc-dev` (cabeceras del kernel, tres IDs distintos en tres intentos:
+`CVE-2026-53398`, `CVE-2026-64535`, `CVE-2026-64564`) y en la librería
+estándar de Go embebida en `pspy64` (dos IDs de la misma familia
+`html/template`: `CVE-2023-24538`, `CVE-2023-24540`). Ir añadiendo una
+excepción a la vez no arreglaba nada de fondo — el dueño del proyecto decidió
+romper el ciclo cambiando la política, no persiguiendo más CVEs: **Trivy deja
+de bloquear la publicación en cualquier perfil** (ver `docs/ci.md`, sección
+"Escaneo de imágenes", y `CHANGELOG.md`). El razonamiento: `full`/`full-msf`
+incluyen herramientas ofensivas a propósito, y un escáner genérico de cadena
+de suministro no puede distinguir eso de un defecto accidental. El escaneo se
+sigue haciendo siempre y su resultado queda documentado como artefacto
+descargable de cada publicación; revisarlo y decidir si una imagen es apta
+para un despliegue dado pasa a ser responsabilidad de quien la despliega,
+igual que el resto del modelo de responsabilidad del proyecto
+(`docs/uso-autorizado.md`).
+
+**Pendiente real, no resuelto hoy** (ya no bloqueante, pero sigue siendo la
+mejora correcta): un build multi-etapa que compile en una etapa aparte y no
+lleve el compilador/cabeceras a la imagen final evitaría que
+`linux-libc-dev` apareciera siquiera en el escaneo de vulnerabilidades,
+aunque ya no impida publicar. Queda como trabajo futuro.
 
 ---
 

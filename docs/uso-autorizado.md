@@ -24,6 +24,12 @@ cheatsheet del repositorio.
 - Comprobar contra qué objetivo lanzas una herramienta.
 - Mantener listas de rangos permitidos ni bloquear tráfico.
 - Pedirte que justifiques una operación antes de ejecutarla.
+- Decidir si una imagen es "segura" para desplegar y negarse a publicarla si
+  no. Las imágenes `full`/`full-msf` llevan Metasploit y otras herramientas
+  ofensivas a propósito: un escaneo de vulnerabilidades (Trivy, ver
+  `docs/ci.md`) corre siempre y su informe queda documentado como artefacto
+  descargable, pero nunca bloquea la publicación — revisarlo y decidir si
+  una imagen es apta para tu despliegue es cosa tuya, no del pipeline.
 
 Los laboratorios externos —Hack The Box, TryHackMe, la VPN de un cliente— son
 plataformas ajenas, con sus propios términos de servicio y su propia

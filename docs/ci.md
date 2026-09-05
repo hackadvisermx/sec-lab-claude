@@ -36,7 +36,7 @@ con un job que depende de otro que falló.
 | `gitleaks` | Escaneo de secretos de todo el historial con la action oficial de gitleaks | Sí |
 | `terraform` | Si existe `terraform/`: `terraform fmt -check` y `terraform validate`. Si no existe (Fases 10-11, sin implementar todavía): el job pasa con un aviso explícito de que no hay nada que validar — nunca finge haber comprobado algo que no existe | Sí (cuando aplica) |
 | `seguridad` | `scripts/verificar-seguridad.sh` contra un `.env` efímero generado por `scripts/ci/preparar-env.sh` | Sí |
-| `build-test` (matriz `lite`/`desktop`/`full`) | `seclab image build` + `seclab start` + `scripts/smoke.sh` contra un contenedor real, en un runner efímero de GitHub; después, escaneo de la imagen con Trivy (`CRITICAL,HIGH`, informativo, no bloquea la rama) | El build y los smoke tests sí; Trivy aquí es sólo informativo (ver más abajo por qué en publicación sí bloquea) |
+| `build-test` (matriz `lite`/`desktop`/`full`) | `seclab image build` + `seclab start` + `scripts/smoke.sh` contra un contenedor real, en un runner efímero de GitHub; después, escaneo de la imagen con Trivy (`CRITICAL,HIGH`, informativo, nunca bloquea) | El build y los smoke tests sí; Trivy nunca bloquea, en ningún workflow (ver "Escaneo de imágenes" más abajo) |
 | `vpn-test` | `scripts/ci/probar-vpn.sh`: reproduce el procedimiento completo de la Fase 7 contra un servidor OpenVPN local de prueba (arranque de perfil, rutas exactas, rechazo por solape, killswitch) | Sí |
 
 `full-msf` no entra en la matriz de `build-test`: es el perfil más pesado de
@@ -55,9 +55,11 @@ Dockerfile, misma cadena de etapas). Se construye y publica sólo bajo demanda
    `linux/amd64` y `linux/arm64` a la vez con `docker/build-push-action`
    (`provenance: true`), etiqueta con la versión del tag (`vX.Y.Z` → `X.Y.Z`),
    con el commit corto y como `latest`. Después:
-   - Escanea la imagen publicada con Trivy — **aquí sí bloqueante para
-     `CRITICAL`** (`exit-code: 1`): informar tras publicar no sirve de nada,
-     hay que impedir la publicación.
+   - Escanea la imagen publicada con Trivy — **informativo, nunca bloquea la
+     publicación** (`exit-code: 0`), en ningún perfil. El resultado se sube
+     como artefacto descargable del workflow (`trivy-<perfil>.txt`,
+     90 días de retención) para que quien vaya a desplegar la imagen lo
+     revise antes de usarla.
    - Genera un SBOM con Syft (SPDX JSON) y lo adjunta a la imagen con
      `cosign attach sbom`.
    - Firma la imagen y el SBOM adjunto con Cosign, en modo **keyless** (OIDC
@@ -137,28 +139,52 @@ Actions.
 
 ## Escaneo de imágenes (Trivy)
 
-Se usa la action oficial `aquasecurity/trivy-action`. En `ci.yml`
-(`build-test`) el escaneo es informativo (`exit-code: 0`): sirve para ver la
-tendencia de vulnerabilidades en cada PR sin bloquear el desarrollo normal por
-un CVE nuevo en una dependencia de sistema que todavía no se ha podido fijar.
-En `publicar.yml` el mismo escaneo **sí bloquea la publicación** si aparece
-algo `CRITICAL` (`exit-code: 1`): es la última puerta antes de que la imagen
-llegue a un alumno.
+Se usa la action oficial `aquasecurity/trivy-action`, restringida a
+`scanners: vuln` (sólo vulnerabilidades — ver más abajo por qué se excluye el
+escáner de secretos). El escaneo **corre siempre, en `ci.yml` y en
+`publicar.yml`, y nunca bloquea nada** (`exit-code: 0` en todos los casos).
+
+**Por qué se quitó el bloqueo que existió brevemente** (decisión explícita
+del dueño del proyecto, no un descuido): `full`/`full-msf` incluyen a
+propósito herramientas ofensivas — Metasploit, binarios de escalada de
+privilegios con librerías antiguas (`pspy64`), wordlists que se parecen a
+credenciales porque están pensados para auditar objetivos con ellos. Un
+escáner genérico de cadena de suministro no puede distinguir eso de un
+defecto accidental. Bloquear la publicación por cualquier hallazgo `CRITICAL`
+significaba perseguir, uno a uno y para siempre, cada CVE nueva que Ubuntu le
+fuera asignando al paquete de cabeceras del kernel (`linux-libc-dev`, que
+`pwntools`/`ropper` necesitan de verdad en tiempo de ejecución) o a la
+librería estándar de Go embebida en `pspy64` (que sólo tiene una versión
+publicada, de 2023, sin parche disponible al que subir el pin) — sin arreglar
+nunca el problema de fondo, y deteniendo cada publicación por algo que es
+inherente al propio producto, no un defecto suyo.
+
+En su lugar: **el escaneo se documenta siempre, como artefacto descargable
+del workflow** (`trivy-<perfil>.txt`, incluido `trivy-full-msf.txt`, 90 días
+de retención — pestaña "Artifacts" de cada ejecución de `publicar.yml`).
+Revisar ese informe y decidir si una imagen concreta es apta para un
+despliegue dado es responsabilidad de quien la despliega, exactamente el
+mismo modelo de responsabilidad que ya aplica el resto del proyecto (ver
+`docs/uso-autorizado.md`): SecLab entrega la información, no juega de árbitro.
 
 Trivy no está instalado en esta máquina de desarrollo; no se ha podido
 ejecutar localmente. Sólo se ha validado la sintaxis de los pasos que lo
 invocan — sí se ejecutó de verdad en GitHub Actions, publicando por primera
-vez (ver más abajo).
+vez.
 
-**Excepciones documentadas (`.trivyignore`)**: publicar `full-msf` de verdad
-bloqueó por `CVE-2026-53398` en `linux-libc-dev` (cabeceras del kernel de
-Linux, arrastradas por las herramientas de compilación de `full`/`full-msf`).
-Ese paquete no trae código ejecutable del kernel — el contenedor corre sobre
-el kernel del host, nunca sobre el suyo propio — así que no hay ninguna vía
-real de disparar una CVE del kernel desde dentro. Se documentó la excepción
-en `.trivyignore`, en la raíz del repositorio, con la CVE y esta misma
-justificación por escrito. Cualquier excepción nueva sigue el mismo criterio:
-nunca se añade sin explicar por qué no es explotable en un contenedor.
+**`.trivyignore`**: se conserva como documentación histórica de los
+hallazgos ya revisados (`linux-libc-dev`, `pspy64`), con su justificación por
+escrito, aunque ya no sea necesario para que la publicación pase — sirve para
+que el informe no se llene de ruido sobre algo ya evaluado. Cualquier entrada
+nueva sigue el mismo criterio: nunca se añade sin explicar el porqué.
+
+**Por qué se excluye el escáner de secretos** (`scanners: vuln`, no el valor
+por defecto): sin esto, Trivy también marca como "CRITICAL: Stripe Secret
+Key" contenido de los propios wordlists de Metasploit (pensados para que el
+alumno los use al auditar objetivos, no secretos reales de nadie) y de sus
+specs de pruebas unitarias (cadenas de ejemplo enmascaradas). No es un
+hallazgo de seguridad, es el escáner equivocado para el contenido de una
+herramienta de seguridad.
 
 ## Cómo reproducir cada verificación en local
 

@@ -116,25 +116,45 @@ jobs:
             ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}:${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.commit }}
             ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}:latest
 
-      - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
+      - name: Escaneo de la imagen publicada con Trivy (informativo, no bloquea)
+        # Decisión explícita del dueño del proyecto: Trivy NUNCA bloquea la
+        # publicación, en ningún perfil. `full`/`full-msf` incluyen a
+        # propósito herramientas ofensivas (Metasploit, binarios de privesc
+        # con librerías viejas, wordlists que parecen credenciales): un
+        # escáner genérico de cadena de suministro no puede distinguir eso
+        # de un defecto accidental, y bloquear por ello es perseguir CVEs
+        # nuevas del kernel/Go una por una para siempre sin arreglar nada de
+        # fondo (ver TESTING_GAPS.md, Fase 8). El escaneo se sigue haciendo
+        # SIEMPRE y su resultado se documenta como artefacto descargable del
+        # workflow (ver el paso siguiente): la responsabilidad de revisarlo
+        # y decidir si una imagen es apta para desplegar es de quien la
+        # despliega, coherente con el modelo de responsabilidad del proyecto
+        # (docs/uso-autorizado.md) — SecLab no es quien valida ni bloquea.
+        #
         # scanners: vuln — sin esto, Trivy también activa su escáner de
         # SECRETOS por defecto, que marca como "CRITICAL: Stripe Secret Key"
         # contenido de los propios wordlists de Metasploit (pensados para que
         # el alumno los use al auditar objetivos, no secretos reales de
         # nadie) y de sus specs de pruebas unitarias (cadenas de ejemplo
-        # enmascaradas, para probar que el redactado de logs funciona).
-        # Encontrado publicando full-msf: esto no es una vulnerabilidad, es
-        # el escáner equivocado para el contenido de una herramienta de
-        # seguridad. El escaneo de vulnerabilidades reales sigue igual de
-        # estricto (severity: CRITICAL, exit-code: 1).
+        # enmascaradas, para probar que el redactado de logs funciona). Eso
+        # no es una vulnerabilidad, es el escáner equivocado para el
+        # contenido de una herramienta de seguridad.
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           trivyignores: .trivyignore
           scanners: vuln
           image-ref: ghcr.io/${{ github.repository }}/seclab-${{ matrix.perfil }}@${{ steps.build.outputs.digest }}
           format: table
-          severity: CRITICAL
-          exit-code: '1'
+          output: trivy-${{ matrix.perfil }}.txt
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+
+      - name: Subir el informe de Trivy como artefacto del workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ matrix.perfil }}
+          path: trivy-${{ matrix.perfil }}.txt
+          retention-days: 90
 
       - name: Instalar Syft
         uses: anchore/sbom-action/download-syft@v0
@@ -239,25 +259,33 @@ jobs:
             ghcr.io/${{ github.repository }}/seclab-full-msf:${{ steps.meta.outputs.version }}
             ghcr.io/${{ github.repository }}/seclab-full-msf:${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.commit }}
 
-      - name: Escaneo de la imagen publicada con Trivy (bloqueante para CRITICAL)
+      - name: Escaneo de la imagen publicada con Trivy (informativo, no bloquea)
+        # Decisión explícita del dueño del proyecto: Trivy NUNCA bloquea la
+        # publicación, en ningún perfil — ver el comentario completo en el
+        # job de la matriz (lite/desktop/full), más arriba en este mismo
+        # archivo, y TESTING_GAPS.md (Fase 8).
+        #
         # scanners: vuln — sin esto, Trivy también activa su escáner de
         # SECRETOS por defecto, que marca como "CRITICAL: Stripe Secret Key"
-        # contenido de los propios wordlists de Metasploit (pensados para que
-        # el alumno los use al auditar objetivos, no secretos reales de
-        # nadie) y de sus specs de pruebas unitarias (cadenas de ejemplo
-        # enmascaradas, para probar que el redactado de logs funciona).
-        # Encontrado publicando full-msf: esto no es una vulnerabilidad, es
-        # el escáner equivocado para el contenido de una herramienta de
-        # seguridad. El escaneo de vulnerabilidades reales sigue igual de
-        # estricto (severity: CRITICAL, exit-code: 1).
+        # contenido de los propios wordlists de Metasploit y de sus specs de
+        # pruebas unitarias: no es una vulnerabilidad, es el escáner
+        # equivocado para el contenido de una herramienta de seguridad.
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           trivyignores: .trivyignore
           scanners: vuln
           image-ref: ghcr.io/${{ github.repository }}/seclab-full-msf@${{ steps.build.outputs.digest }}
           format: table
-          severity: CRITICAL
-          exit-code: '1'
+          output: trivy-full-msf.txt
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+
+      - name: Subir el informe de Trivy como artefacto del workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-full-msf
+          path: trivy-full-msf.txt
+          retention-days: 90
 
       - name: Instalar Syft
         uses: anchore/sbom-action/download-syft@v0

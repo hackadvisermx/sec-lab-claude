@@ -102,6 +102,8 @@ jobs:
           docker buildx bake --print desktop >/dev/null
           docker buildx bake --print full >/dev/null
           docker buildx bake --print full-msf >/dev/null
+      - name: docker-compose.tailscale.yml (Fase 9 — proyecto propio, nunca junto a docker-compose.yml)
+        run: docker compose -f docker-compose.tailscale.yml config --quiet
 
   # ---------------------------------------------------------------------------
   gitleaks:
@@ -133,22 +135,30 @@ jobs:
       - name: Aviso — sin directorio terraform/ todavía
         if: steps.existe.outputs.existe == 'false'
         run: |
-          echo "::notice::No existe terraform/ (Fases 10-11, sin implementar todavía). Este job no valida nada porque no hay nada que validar; no se finge una comprobación inexistente." >&2
+          echo "::notice::No existe terraform/ (ningún proveedor implementado todavía). Este job no valida nada porque no hay nada que validar; no se finge una comprobación inexistente." >&2
       - name: setup-terraform
         if: steps.existe.outputs.existe == 'true'
         uses: hashicorp/setup-terraform@v3
-      - name: terraform fmt -check
+      - name: terraform fmt -check (todos los módulos)
         if: steps.existe.outputs.existe == 'true'
         working-directory: terraform
         run: terraform fmt -check -recursive
-      - name: terraform init -backend=false
+      # Un módulo por proveedor (digitalocean/, gcp/, oracle/), cada uno con
+      # su propio bloque provider/backend: 'terraform init'/'validate' se
+      # ejecutan por subdirectorio, nunca en la raíz de terraform/ (ahí no
+      # hay ningún .tf, sólo los módulos). Mismo patrón que 'make lint'.
+      - name: terraform init -backend=false y validate (por módulo)
         if: steps.existe.outputs.existe == 'true'
         working-directory: terraform
-        run: terraform init -backend=false
-      - name: terraform validate
-        if: steps.existe.outputs.existe == 'true'
-        working-directory: terraform
-        run: terraform validate
+        run: |
+          set -euo pipefail
+          for modulo in */; do
+            modulo="${modulo%/}"
+            [ -f "${modulo}/versions.tf" ] || continue
+            echo "::group::terraform/${modulo}"
+            ( cd "$modulo" && terraform init -backend=false -input=false && terraform validate )
+            echo "::endgroup::"
+          done
 
   # ---------------------------------------------------------------------------
   seguridad:
@@ -225,3 +235,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: scripts/ci/probar-vpn.sh
         run: ./scripts/ci/probar-vpn.sh
+
+  # ---------------------------------------------------------------------------
+  # Fase 9 (opcional): smoke test de Tailscale SIN conexión real (sin cuenta,
+  # sin auth key real, nunca contra controlplane.tailscale.com — ver el propio
+  # script y docs/tailscale.md, sección "Qué verifica el smoke test").
+  tailscale-test:
+    name: Test de Tailscale (scripts/ci/probar-tailscale.sh, sin conexión real)
+    runs-on: ubuntu-latest
+    needs: [shellcheck, hadolint, compose-validate, gitleaks, seguridad]
+    steps:
+      - uses: actions/checkout@v4
+      - name: scripts/ci/probar-tailscale.sh
+        run: ./scripts/ci/probar-tailscale.sh

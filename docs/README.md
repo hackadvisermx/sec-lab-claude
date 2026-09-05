@@ -10,6 +10,8 @@
 
 - [Uso autorizado y responsabilidad](uso-autorizado.md) — **léelo antes de conectarte a nada**
 - [VPN multiperfil](vpn.md) — Hack The Box, TryHackMe y VPN de cliente
+- [Tailscale y acceso remoto](tailscale.md) — nodo dedicado, opcional, convivencia con VPN
+- [Despliegue cloud (DigitalOcean, opcional)](cloud.md) — coste, TTL, backend remoto y responsabilidad económica del alumno
 - [Laboratorios del workspace](labs.md) — crear, listar y reiniciar labs
 - [Copias de seguridad](backup.md) — qué se guarda, cómo se verifica y cómo se restaura
 - [Perfiles y paquetes](perfiles.md) — qué trae cada imagen
@@ -35,8 +37,7 @@ Estas páginas llegan con su fase correspondiente:
 |---|---|
 | Guía de la terminal: zsh, tmux, atajos y Nerd Fonts | 4 |
 | Guía del escritorio: XFCE, Burp y portapapeles | 5 |
-| Tailscale y acceso remoto | 9 |
-| Despliegue cloud por proveedor | 10–11 |
+| Despliegue cloud en GCP y Oracle Cloud | 11 |
 | Cheatsheets por paquete | 12 |
 | Guía del servidor MCP | 13 |
 | Informe final | al cierre |

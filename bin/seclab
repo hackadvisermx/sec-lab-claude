@@ -28,6 +28,8 @@ readonly SECLAB_RAIZ
 . "${SECLAB_RAIZ}/lib/labs.sh"
 # shellcheck source=../lib/vpn.sh
 . "${SECLAB_RAIZ}/lib/vpn.sh"
+# shellcheck source=../lib/cloud.sh
+. "${SECLAB_RAIZ}/lib/cloud.sh"
 
 if [ -r "${SECLAB_RAIZ}/VERSION" ]; then
     SECLAB_VERSION="$(tr -d '[:space:]' < "${SECLAB_RAIZ}/VERSION")"
@@ -167,6 +169,19 @@ ${C_NEGRITA}VPN${C_FIN}
   vpn logs PERFIL           Registro de OpenVPN de ese perfil
   vpn down [PERFIL]         Baja ese perfil, o todos los activos si se omite
 
+${C_NEGRITA}ACCESO REMOTO (Tailscale, opcional)${C_FIN}
+  tailscale up              Arranca el nodo Tailscale (falla si falta TAILSCALE_AUTH_KEY)
+  tailscale status          Estado del nodo: contenedor, tailnet y cómo publicar un puerto
+  tailscale down            Detiene el contenedor de Tailscale (conserva su identidad)
+
+${C_NEGRITA}DESPLIEGUE CLOUD (opcional, a cargo económico del alumno)${C_FIN}
+  cloud plan    --provider digitalocean|gcp|oracle   Estimación de coste + 'terraform plan'
+  cloud up      --provider digitalocean|gcp|oracle   Exige owner/TTL y escribir 'acepto'
+  cloud wait    --provider digitalocean|gcp|oracle   Espera a que el bootstrap termine
+  cloud status  --provider digitalocean|gcp|oracle   Recursos activos, antigüedad, recuerda destroy
+  cloud connect --provider digitalocean|gcp|oracle   SSH a la instancia
+  cloud destroy --provider digitalocean|gcp|oracle   Ofrece exportar el workspace remoto y destruye
+
 ${C_NEGRITA}MANTENIMIENTO${C_FIN}
   update [--stash]          Trae la versión nueva del curso y reconstruye
 
@@ -188,7 +203,6 @@ ${C_NEGRITA}SEGURIDAD${C_FIN}
 
 ${C_NEGRITA}TODAVÍA NO IMPLEMENTADOS${C_FIN}                        ${C_GRIS}fase${C_FIN}
   mcp ...                   Servidor MCP para agentes de IA               ${C_GRIS}13${C_FIN}
-  cloud ...                 Despliegue en la nube, a cargo del alumno     ${C_GRIS}10${C_FIN}
 
 ${C_NEGRITA}OPCIONES DE init${C_FIN}
   --profile PERFIL          lite | desktop | full | full-msf
@@ -203,6 +217,8 @@ ${C_NEGRITA}MÁS INFORMACIÓN${C_FIN}
   docs/inicio-rapido.md     Puesta en marcha
   docs/backup.md            Copias de seguridad y restauración
   docs/vpn.md               VPN multiperfil: vpnhtb, vpntry, vpncli
+  docs/tailscale.md         Acceso remoto con Tailscale (opcional)
+  docs/cloud.md             Despliegue cloud opcional (DigitalOcean, GCP, Oracle): coste, TTL, riesgos
   docs/uso-autorizado.md    Alcance, responsabilidad y reglas de uso
 AYUDA
 }
@@ -417,6 +433,48 @@ comprobar_glifos() {
     return 1
 }
 
+# --- 4. Convivencia de Tailscale con las VPN de plataforma (Fase 9) ---------
+# Ver la nota extensa donde se llama a esta función, dentro de cmd_doctor.
+comprobar_convivencia_tailscale() {
+    local id_ts modo_ts avisos_local=0
+
+    if [ -z "$(leer_variable "$ARCHIVO_ENV" TAILSCALE_AUTH_KEY)" ]; then
+        aviso "SECLAB_HABILITAR_TAILSCALE=true pero TAILSCALE_AUTH_KEY está vacía."
+        detalle "'seclab tailscale up' se negará a arrancar el contenedor hasta que la rellenes."
+        detalle "Flujo para crearla (nunca la genera SecLab): docs/tailscale.md"
+        avisos_local=$(( avisos_local + 1 ))
+    fi
+
+    id_ts="$(id_contenedor_tailscale)"
+    if [ -z "$id_ts" ]; then
+        detalle "Contenedor 'tailscale' no arrancado (seclab tailscale up): sin conflicto que comprobar todavía."
+        return "$avisos_local"
+    fi
+
+    modo_ts="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$id_ts" 2>/dev/null)"
+    case "$modo_ts" in
+        container:*|service:*)
+            aviso "El contenedor 'tailscale' comparte namespace de red con otro contenedor (${modo_ts})."
+            detalle "La Fase 9 exige que NO lo haga: Tailscale y las VPN de 'lab' deben vivir en"
+            detalle "tablas de rutas separadas para que no puedan pelearse por la ruta por defecto."
+            detalle "Revisa docker-compose.tailscale.yml: no debe declarar network_mode."
+            return $(( avisos_local + 1 ))
+            ;;
+        *)
+            printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" \
+                "'tailscale' vive en su propio namespace de red (${modo_ts:-bridge}); no comparte tabla de rutas con 'lab'" >&2
+            ;;
+    esac
+
+    if [ "$(estado_contenedor)" = "running" ] && [ -n "$(vpn_perfiles_activos)" ]; then
+        printf '  %s %s\n' "${C_VERDE}✓${C_FIN}" "VPN de plataforma activa en 'lab' a la vez que Tailscale: sin conflicto posible" >&2
+        detalle "Cada uno vive en su propio contenedor, con su propia tabla de rutas: no hay una"
+        detalle "tabla compartida que uno pueda secuestrarle al otro dentro de Docker."
+        detalle "'lab' sigue usando --route-nopull (Fase 7); 'tailscale' usa --accept-routes=false."
+    fi
+    return "$avisos_local"
+}
+
 # -----------------------------------------------------------------------------
 # doctor
 # -----------------------------------------------------------------------------
@@ -555,10 +613,21 @@ cmd_doctor() {
     fi
 
     # Conflicto con Tailscale por la ruta por defecto (prompt_v3.md, sección
-    # "Acceso remoto"): Tailscale todavía no existe en este repositorio
-    # (llega, opcional, en la Fase 9). No hay nada que detectar todavía; se dice
-    # así en vez de fingir una comprobación sin nada que comprobar.
-    detalle "Tailscale (Fase 9, opcional) todavía no está implementado: sin conflicto de rutas que detectar."
+    # "Acceso remoto"). Con la arquitectura elegida en la Fase 9 (contenedor
+    # 'tailscale' propio, en su propio proyecto de Compose — ver
+    # docker-compose.tailscale.yml y docs/tailscale.md), Tailscale y las VPN
+    # de plataforma de 'lab' viven en namespaces de red DISTINTOS: no hay una
+    # única tabla de rutas que ambos puedan disputarse dentro de Docker. La
+    # comprobación real, por tanto, no es "¿han chocado?" sino "¿siguen
+    # aislados de verdad?": que 'tailscale' no comparta el namespace de red de
+    # ningún otro contenedor.
+    if [ "$(leer_variable "$ARCHIVO_ENV" SECLAB_HABILITAR_TAILSCALE)" = "true" ]; then
+        local avisos_tailscale=0
+        comprobar_convivencia_tailscale || avisos_tailscale=$?
+        avisos=$(( avisos + avisos_tailscale ))
+    else
+        detalle "Tailscale desactivado (SECLAB_HABILITAR_TAILSCALE=false): sin nada que comprobar."
+    fi
 
     local puerto ocupados=""
     for puerto in $(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_SSH); do
@@ -2510,6 +2579,196 @@ vpn_down() {
 }
 
 # -----------------------------------------------------------------------------
+# tailscale (Fase 9, opcional)
+# -----------------------------------------------------------------------------
+# Arquitectura (ver docs/tailscale.md y docker-compose.tailscale.yml, que
+# explica largo el porqué): un contenedor 'tailscale' PROPIO, en su PROPIO
+# proyecto de Compose, con ciclo de vida independiente del de 'lab'. Estos
+# comandos nunca llaman a compose_seclab(): sólo a compose_tailscale()
+# (lib/docker.sh). 'seclab stop'/'restart'/'update'/'limpiar' no tocan a
+# Tailscale por diseño; sólo 'seclab tailscale down' lo hace.
+#
+# Igual que 'seclab vpn': la validación que no necesita hablar con Docker se
+# hace aquí, con el mensaje exacto de qué falta; el resto lo hace el propio
+# contenedor (ver el `command` de docker-compose.tailscale.yml, que es la red
+# de seguridad si alguien se salta el CLI).
+cmd_tailscale() {
+    local sub="${1:-ayuda}"; shift || true
+    case "$sub" in
+        up)             tailscale_up ;;
+        down|bajar)     tailscale_down ;;
+        status|estado)  tailscale_status ;;
+        ayuda|-h|--help)
+            cat >&2 <<AYUDA
+${C_NEGRITA}seclab tailscale${C_FIN} — acceso remoto privado (opcional)
+
+  up                        Arranca el nodo Tailscale (falla sin TAILSCALE_AUTH_KEY)
+  status                    Estado del contenedor y de la sesión Tailscale
+  down                      Detiene el contenedor (conserva su identidad y sus claves)
+
+Tailscale vive en un contenedor propio, independiente del ciclo de vida de
+'lab': 'seclab stop'/'restart'/'update' no lo tocan.
+
+SecLab nunca genera una auth key real. El flujo para crear una (efímera, de
+mínimo privilegio) está en docs/tailscale.md.
+
+Detalle completo: docs/tailscale.md
+AYUDA
+            ;;
+        *) abortar "Subcomando de tailscale no reconocido: ${sub}" \
+                   "No se ha hecho nada." \
+                   "Ejecuta 'seclab tailscale ayuda'." ;;
+    esac
+}
+
+tailscale_up() {
+    exigir_env
+
+    # --- 1. Comprobaciones que no hablan con Docker -------------------------
+    if [ "$(leer_variable "$ARCHIVO_ENV" SECLAB_HABILITAR_TAILSCALE)" != "true" ]; then
+        titulo "Habilitando Tailscale"
+        info "SECLAB_HABILITAR_TAILSCALE está en false: el contenedor 'tailscale' todavía no existe."
+        detalle "A diferencia de la VPN de plataforma (Fase 7), esto NO recrea 'lab': Tailscale"
+        detalle "vive en un contenedor y un proyecto de Compose completamente aparte."
+        printf '\n' >&2
+        if ! confirmar "¿Activar Tailscale y arrancar su contenedor ahora?"; then
+            abortar "No se ha arrancado nada." "" \
+                    "Actívalo cuando quieras: SECLAB_HABILITAR_TAILSCALE=true en .env, y 'seclab tailscale up'."
+        fi
+        escribir_variable "$ARCHIVO_ENV" SECLAB_HABILITAR_TAILSCALE true
+    fi
+
+    # Único punto de entrada real (prompt_v3.md, sección "Acceso remoto"): el
+    # arranque falla aquí, con un mensaje claro, ANTES de tocar Docker para
+    # nada — nunca "arranca a medias y falla luego de forma confusa". El
+    # `command` de docker-compose.tailscale.yml repite esta misma
+    # comprobación dentro del contenedor, por si alguien invoca `docker
+    # compose` directamente sin pasar por este CLI.
+    if [ -z "$(leer_variable "$ARCHIVO_ENV" TAILSCALE_AUTH_KEY)" ]; then
+        abortar "TAILSCALE_AUTH_KEY está vacía en .env." \
+                "El nodo Tailscale no puede unirse a ninguna tailnet sin ella. SecLab se niega" \
+                "a arrancar el contenedor y fallar más tarde de forma confusa." \
+                "Crea una auth key efímera y de mínimo privilegio (nunca la genera SecLab por" \
+                "ti): flujo paso a paso en docs/tailscale.md. Ponla en TAILSCALE_AUTH_KEY en .env" \
+                "y repite 'seclab tailscale up'."
+    fi
+
+    # --- 2. Arranque ----------------------------------------------------------
+    titulo "Arrancando el contenedor 'tailscale'"
+    if ! compose_tailscale up -d tailscale; then
+        abortar "No se ha podido arrancar el contenedor 'tailscale'." \
+                "Revisa el detalle mostrado arriba." \
+                "También puedes mirar: docker compose -f docker-compose.tailscale.yml logs tailscale"
+    fi
+
+    sleep 2
+    if [ "$(estado_contenedor_tailscale)" != "running" ]; then
+        error "El contenedor 'tailscale' se ha detenido justo después de arrancar." \
+              "Casi siempre es una auth key inválida, caducada o ya usada." \
+              "Revisa el motivo exacto (nunca imprime la key): docker compose -f docker-compose.tailscale.yml logs tailscale"
+        exit "$SALIDA_ERROR"
+    fi
+
+    ok "Contenedor 'tailscale' arriba."
+    detalle "Comprueba el estado de la sesión con: seclab tailscale status"
+}
+
+tailscale_status() {
+    exigir_env
+    titulo "Estado de Tailscale"
+
+    if [ "$(leer_variable "$ARCHIVO_ENV" SECLAB_HABILITAR_TAILSCALE)" != "true" ]; then
+        printf '  %s %s\n' "${C_AZUL}·${C_FIN}" "Desactivado (SECLAB_HABILITAR_TAILSCALE=false)" >&2
+        detalle "Actívalo con: seclab tailscale up"
+        return 0
+    fi
+
+    local id estado
+    id="$(id_contenedor_tailscale)"
+    estado="$(estado_contenedor_tailscale)"
+    printf '  %-22s %s\n' "Contenedor" "$estado" >&2
+
+    if [ "$estado" != "running" ]; then
+        if [ -z "$(leer_variable "$ARCHIVO_ENV" TAILSCALE_AUTH_KEY)" ]; then
+            detalle "TAILSCALE_AUTH_KEY está vacía: 'seclab tailscale up' se negará a arrancarlo."
+        else
+            detalle "Arráncalo con: seclab tailscale up"
+        fi
+        return 0
+    fi
+
+    # `tailscale status` no imprime la auth key ni ningún secreto: sólo la
+    # identidad del nodo, su IP en la tailnet y con qué otros nodos puede
+    # hablar. Se ejecuta tal cual, sin filtrar nada adicional aquí.
+    printf '\n' >&2
+    if ! docker exec "$id" tailscale status 2>&1 | sed 's/^/  /' >&2; then
+        detalle "El daemon todavía no ha terminado de arrancar, o la auth key no se ha aceptado."
+        detalle "Detalle (nunca imprime la key): docker compose -f docker-compose.tailscale.yml logs tailscale"
+    fi
+
+    printf '\n' >&2
+    detalle "Para publicar un servicio de 'lab' hacia tu tailnet (nunca hacia Internet):"
+    detalle "  docker exec \$(docker compose -f docker-compose.tailscale.yml ps -q tailscale) \\"
+    detalle "    tailscale serve --bg --tcp 2222 tcp://host.docker.internal:${SECLAB_PUERTO_SSH:-2222}"
+    detalle "Sustituye el puerto por el que quieras exponer (ver SECLAB_PUERTO_* en .env)."
+}
+
+tailscale_down() {
+    exigir_env
+    if [ "$(estado_contenedor_tailscale)" = "ausente" ]; then
+        info "El contenedor 'tailscale' no está en marcha."
+        return 0
+    fi
+    titulo "Deteniendo el contenedor 'tailscale'"
+    compose_tailscale down
+    ok "Detenido. Su identidad y sus claves siguen en el volumen de estado; 'seclab tailscale up' las reutiliza."
+}
+
+# -----------------------------------------------------------------------------
+# cloud (Fase 10 — DigitalOcean, proveedor de referencia; Fase 11 — GCP y
+# Oracle Cloud; todo opcional)
+# -----------------------------------------------------------------------------
+# Toda la lógica vive en lib/cloud.sh; aquí sólo se despacha el subcomando.
+# Ningún subcomando de 'seclab cloud' se ejecuta nunca sin pasar antes por
+# cloud_leer_argumentos (exige --provider, uno de: digitalocean, gcp, oracle)
+# y, en plan/up/destroy, por exigir_owner_y_ttl (exige owner y
+# fecha_expiracion en terraform.tfvars antes de tocar Terraform). Ver
+# docs/cloud.md para el flujo completo de cada proveedor.
+cmd_cloud() {
+    local sub="${1:-ayuda}"; shift || true
+    case "$sub" in
+        plan)                cloud_plan "$@" ;;
+        up)                  cloud_up "$@" ;;
+        wait|esperar)        cloud_wait "$@" ;;
+        status|estado)       cloud_status "$@" ;;
+        connect|conectar)    cloud_connect "$@" ;;
+        destroy|destruir)    cloud_destroy "$@" ;;
+        ayuda|-h|--help)
+            cat >&2 <<AYUDA
+${C_NEGRITA}seclab cloud${C_FIN} — despliegue cloud opcional (DigitalOcean, GCP, Oracle Cloud)
+
+  plan    --provider digitalocean|gcp|oracle   Estimación de coste + 'terraform plan'
+  up      --provider digitalocean|gcp|oracle   Exige owner/TTL y escribir 'acepto'; luego 'terraform apply'
+  wait    --provider digitalocean|gcp|oracle   Espera a que el bootstrap termine y el contenedor esté sano
+  status  --provider digitalocean|gcp|oracle   Recursos activos, antigüedad y recordatorio de destroy
+  connect --provider digitalocean|gcp|oracle   SSH a la instancia
+  destroy --provider digitalocean|gcp|oracle   Ofrece exportar el workspace remoto y luego 'terraform destroy'
+
+Todos aceptan --tfvars ARCHIVO (por defecto: terraform/<proveedor>/terraform.tfvars).
+
+LA NUBE ES TOTALMENTE OPCIONAL Y EL GASTO ES PERSONAL DEL ALUMNO. SecLab no
+gestiona presupuestos ni asume ningún cargo de DigitalOcean, Google Cloud ni
+Oracle Cloud. Detalle completo por proveedor, incluida la limitación real del
+backend remoto y del TTL de cada uno, en docs/cloud.md.
+AYUDA
+            ;;
+        *) abortar "Subcomando de cloud no reconocido: ${sub}" \
+                   "No se ha hecho nada." \
+                   "Ejecuta 'seclab cloud ayuda'." ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
 # Despacho
 # -----------------------------------------------------------------------------
 main() {
@@ -2544,8 +2803,9 @@ main() {
         lab)                   cmd_lab "$@" ;;
         update)                cmd_update "$@" ;;
         vpn)                    cmd_vpn "$@" ;;
+        tailscale)              cmd_tailscale "$@" ;;
         mcp)       no_implementado "mcp" 13 ;;
-        cloud)     no_implementado "cloud" 10 ;;
+        cloud)                  cmd_cloud "$@" ;;
 
         *)
             error "Comando desconocido: ${comando}" \

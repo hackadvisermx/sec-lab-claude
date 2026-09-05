@@ -155,32 +155,45 @@ que hay que mirar es esto.
 
 ## Convivencia con Tailscale
 
-Tailscale y OpenVPN compiten por `/dev/net/tun` y por la tabla de rutas. La
-política de `--route-nopull` es lo que permite que coexistan. Tailscale
-todavía no está implementado en SecLab (llega, opcional, en la Fase 9); hasta
-entonces `seclab doctor` lo dice así, en vez de simular una comprobación de un
-conflicto que hoy no puede darse.
+Tailscale ya está implementado (Fase 9, opcional): ver
+[tailscale.md](tailscale.md) para la guía completa, el flujo de creación de
+una auth key y los comandos del CLI. Esta sección se queda como la versión
+docente del razonamiento, porque nace de la misma pregunta que motiva la
+sección anterior: dos mecanismos de red que podrían pelearse por la tabla de
+rutas y por `/dev/net/tun`.
 
-**Decisión de diseño para la Fase 9: Tailscale va en el host, no como sidecar
-de `lab`.** `prompt_v3.md` deja abiertas tres formas de integrar Tailscale
-(nodo en el host, Tailscale Serve, o sidecar compartiendo el namespace de red
-de `lab`). Con el diseño actual de la Fase 7, `lab` ya no cambia de
-`network_mode` al activar o desactivar un perfil de VPN —eso era cierto en la
-arquitectura anterior, con un contenedor de VPN dedicado, y dejó de serlo—,
-así que la razón para mantener esta decisión ya no es esa. Sigue siendo la
-correcta por otro motivo: separar ciclos de vida. El acceso remoto (Tailscale)
-y las VPN de plataforma (HTB, THM, un cliente) tienen razones muy distintas
-para subir o bajar, y con el diseño actual las segundas se activan y
-desactivan sin recrear `lab` en absoluto (`seclab vpn up`/`down` no tocan el
+**Decisión de diseño: Tailscale va en un contenedor propio, con su propio
+proyecto de Compose — nunca como sidecar de `lab`.** `prompt_v3.md` deja
+abiertas tres formas de integrar Tailscale (nodo en el host, Tailscale Serve,
+o sidecar compartiendo el namespace de red de `lab`) y descarta
+explícitamente la tercera. Con el diseño actual de la Fase 7, `lab` ya no
+cambia de `network_mode` al activar o desactivar un perfil de VPN —eso era
+cierto en la arquitectura anterior, con un contenedor de VPN dedicado, y dejó
+de serlo—, así que la razón para mantener esta decisión ya no es esa. Sigue
+siendo la correcta por otro motivo: separar ciclos de vida. El acceso remoto
+(Tailscale) y las VPN de plataforma (HTB, THM, un cliente) tienen razones muy
+distintas para subir o bajar, y con el diseño actual las segundas se activan
+y desactivan sin recrear `lab` en absoluto (`seclab vpn up`/`down` no tocan el
 contenedor, sólo procesos y reglas de iptables dentro de él). Un sidecar de
 Tailscale pegado a `lab` seguiría atado al ciclo de vida del propio
 contenedor —se reiniciaría con él, por ejemplo en un `seclab update`—, justo
 cuando más importa no perder el acceso remoto: en un despliegue cloud donde
-Tailscale es la única vía de entrada a la máquina. Poniendo Tailscale en el
-host (la VM, o el propio contenedor `lab` sólo si nunca se recrea por
-separado de la sesión de acceso remoto), el acceso queda desacoplado de
-cualquier operación de VPN de plataforma. Cuando se implemente la Fase 9,
-seguir esta decisión en vez de la opción de sidecar.
+Tailscale es la única vía de entrada a la máquina.
+
+La implementación real (`docker-compose.tailscale.yml`) va un paso más allá
+de "no sidecar": el contenedor `tailscale` vive en su **propio proyecto** de
+Docker Compose (`${SECLAB_PROJECT}-tailscale`, distinto del de `lab`), en su
+propio namespace de red, alcanzando los puertos de `lab` por
+`host.docker.internal` en vez de compartir la red `seclab`. La consecuencia
+práctica para la convivencia con la VPN: `tailscale` y las VPN de plataforma
+de `lab` no comparten tabla de rutas en absoluto — cada una vive en el
+namespace de red de su propio contenedor. `seclab doctor` verifica esto de
+verdad (que `tailscale` no declara `network_mode: container:...` ni
+`service:...`), no lo da por supuesto. Detalle completo, incluida la
+excepción real (Tailscale instalado fuera de Docker, en el propio sistema
+operativo del alumno, a la vez que una VPN de plataforma también fuera de
+Docker — fuera del alcance de SecLab), en
+[tailscale.md](tailscale.md#convivencia-con-vpn-de-plataforma).
 
 ## TUN por sistema operativo
 

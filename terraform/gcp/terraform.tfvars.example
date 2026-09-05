@@ -1,0 +1,31 @@
+# =============================================================================
+# SecLab — ejemplo de terraform.tfvars (GCP)
+# =============================================================================
+# Copia a terraform.tfvars (ya está en .gitignore: /terraform/**/*.tfvars) y
+# sustituye TODOS los valores. Los de abajo son evidentemente ficticios.
+#
+# Credenciales: NO se ponen aquí. GCP se autentica mediante Application
+# Default Credentials: define GOOGLE_APPLICATION_CREDENTIALS apuntando a la
+# clave JSON de una cuenta de servicio, o ejecuta
+# 'gcloud auth application-default login' antes de 'seclab cloud plan/up'.
+# =============================================================================
+
+project          = "tu-proyecto-gcp-aqui"
+owner            = "tu-nombre-aqui"
+curso            = "ciberseguridad-2026"
+fecha_expiracion = "2026-12-31"
+
+region = "us-central1"
+zone   = "us-central1-a"
+
+machine_type = "e2-medium"
+
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAREEMPLAZA-CON-TU-LLAVE-PUBLICA tu-llave@tu-maquina"
+ssh_username   = "seclab"
+
+seclab_registry   = "registry.example.invalid/seclab"
+seclab_imagen_ref = "registry.example.invalid/seclab/seclab-lite@sha256:REEMPLAZA0000000000000000000000000000000000000000000000000000"
+
+# Desactivada por defecto: ver docs/cloud.md, "TTL y autodestrucción".
+habilitar_autodestruccion = false
+# service_account_email  = "REEMPLAZA_SOLO_SI_ACTIVAS_LA_AUTODESTRUCCION@tu-proyecto.iam.gserviceaccount.com"

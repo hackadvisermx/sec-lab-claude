@@ -1,0 +1,39 @@
+# =============================================================================
+# SecLab — configuración parcial de backend (ejemplo, NO usar tal cual)
+# =============================================================================
+# Copia este archivo fuera de Git (por ejemplo a ~/.config/seclab/backend.hcl,
+# nunca dentro del repositorio) y rellénalo con tus valores reales. Se pasa a
+# `terraform init -backend-config=/ruta/a/tu/backend.hcl`.
+#
+# Por qué S3-compatible y no DigitalOcean Spaces directamente: Spaces expone
+# una API compatible con S3 para objetos, pero DigitalOcean **no ofrece un
+# servicio de locking** equivalente a DynamoDB. Terraform necesita locking
+# para que dos `apply` simultáneos (dos alumnos, o un alumno con dos
+# terminales) no corrompan el estado. Sin locking, esto es real y no un
+# detalle teórico: es exactamente el tipo de fallo que deja un despliegue a
+# medias y factura recursos huérfanos. Dos alternativas verificadas por
+# lectura de la documentación oficial (no probadas contra una cuenta real,
+# ver TESTING_GAPS.md):
+#
+#   1. RECOMENDADA para este curso: Terraform Cloud (HCP Terraform), backend
+#      "cloud". Locking y cifrado en reposo gestionados por HashiCorp, capa
+#      gratuita suficiente para un alumno. Ver backend "cloud" en versions.tf
+#      (comentado) y https://developer.hashicorp.com/terraform/cloud-docs
+#
+#   2. AWS S3 + DynamoDB (o cualquier S3 real, no Spaces): el backend "s3"
+#      soporta locking nativo por dos vías, según la versión de Terraform:
+#      Terraform >= 1.10 puede usar locking nativo de S3 con
+#      `use_lockfile = true` (sin tabla adicional). En versiones anteriores
+#      (incluida la mínima de este módulo, 1.5) hace falta una tabla
+#      DynamoDB dedicada vía `dynamodb_table`. Si usas Spaces igualmente para
+#      guardar el .tfstate (por ejemplo por residencia de datos), tendrás que
+#      aportar el locking desde otro sitio: DynamoDB no es un servicio de
+#      DigitalOcean, así que esto mezclaría dos proveedores. Por eso la
+#      recomendación por defecto es Terraform Cloud, no Spaces+algo.
+#
+# bucket         = "tu-bucket-de-estado"
+# key            = "seclab/digitalocean/terraform.tfstate"
+# region         = "us-east-1"
+# dynamodb_table = "tu-tabla-de-locking"   # si Terraform < 1.10
+# # use_lockfile = true                    # alternativa si Terraform >= 1.10
+# encrypt        = true

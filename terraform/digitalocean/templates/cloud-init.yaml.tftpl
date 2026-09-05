@@ -1,0 +1,154 @@
+#cloud-config
+# =============================================================================
+# SecLab — bootstrap de la Droplet (cloud-init)
+# =============================================================================
+# Generado por terraform/digitalocean/main.tf a partir de esta plantilla.
+# Objetivo: instalar Docker, traer la imagen de SecLab por digest o tag
+# inmutable desde ${seclab_registry}, y arrancarla mediante un servicio
+# systemd — nunca `docker run` suelto en runcmd, para que el ciclo de vida del
+# contenedor lo controle systemd (arranque en el boot, reinicio si cae,
+# `journalctl` para los logs) y no un cloud-init que sólo corre una vez.
+#
+# Idempotencia: cloud-init en sí ya garantiza que `runcmd`/`write_files` se
+# ejecutan una sola vez por instancia (marca /var/lib/cloud/instances/.../sem),
+# pero este script se escribe también pensando en volver a ejecutarse a mano
+# (por ejemplo, si un alumno lo relanza para depurar un fallo de arranque):
+#   - `apt-get install` es idempotente por diseño.
+#   - El repositorio de Docker se añade sólo si no existe ya.
+#   - El usuario del sistema y el volumen de datos se crean con `id -u` /
+#     comprobaciones previas, no a ciegas.
+#   - El fichero de entorno se regenera con el mismo contenido determinista
+#     (deriva de las variables de Terraform, no de nada aleatorio), así que
+#     reescribirlo no cambia nada si no ha cambiado la configuración.
+#   - `systemctl enable --now` es idempotente: si ya está activo, no hace nada.
+#   - El contenedor se identifica por nombre fijo (${nombre_contenedor}); el
+#     script de arranque hace `docker rm -f` de uno preexistente con ese
+#     nombre antes de crearlo, así que repetir el arranque no deja huérfanos.
+#
+# Secretos: aquí NO se escribe ninguna contraseña permanente. La contraseña
+# de VNC/code-server/Jupyter de esta instancia se genera dentro del propio
+# contenedor en su primer arranque (el mismo entrypoint que usa en local, ver
+# docker/entrypoint.sh) y sólo vive en el volumen de datos de la Droplet, nunca
+# en este user-data ni en el estado de Terraform. Para recuperarla:
+# `seclab cloud connect --provider digitalocean` hace un SSH y la muestra
+# leyéndola del contenedor, igual que 'seclab status' hace en local.
+# =============================================================================
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - at
+
+write_files:
+  - path: /etc/seclab-cloud/entorno
+    permissions: '0600'
+    owner: root:root
+    content: |
+      SECLAB_IMAGEN_REF=${seclab_imagen_ref}
+      SECLAB_NOMBRE_CONTENEDOR=${nombre_contenedor}
+      SECLAB_OWNER=${owner}
+      SECLAB_PROPOSITO=${proposito}
+      SECLAB_FECHA_EXPIRACION=${fecha_expiracion}
+      SECLAB_PUERTO_SSH=${puerto_ssh}
+
+  - path: /etc/systemd/system/seclab.service
+    permissions: '0644'
+    owner: root:root
+    content: |
+      [Unit]
+      Description=SecLab (contenedor docente)
+      After=docker.service network-online.target
+      Requires=docker.service
+      Wants=network-online.target
+
+      [Service]
+      EnvironmentFile=/etc/seclab-cloud/entorno
+      # docker rm -f previo: hace que un reinicio manual del servicio (o una
+      # segunda pasada del bootstrap) no falle por "el nombre ya existe".
+      ExecStartPre=-/usr/bin/docker rm -f ${nombre_contenedor}
+      ExecStartPre=/usr/bin/docker pull $${SECLAB_IMAGEN_REF}
+      ExecStart=/usr/bin/docker run --rm --name $${SECLAB_NOMBRE_CONTENEDOR} \
+        -p 127.0.0.1:8080:8080 \
+        -p 127.0.0.1:6080:6080 \
+        -p 127.0.0.1:8443:8443 \
+        -p 127.0.0.1:8888:8888 \
+        -p $${SECLAB_PUERTO_SSH}:22 \
+        -v seclab-home:/home/seclab \
+        -v seclab-workspace:/workspace \
+        $${SECLAB_IMAGEN_REF}
+      ExecStop=/usr/bin/docker stop -t 30 ${nombre_contenedor}
+      Restart=on-failure
+      RestartSec=5s
+      TimeoutStartSec=300
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Marca que 'seclab cloud wait' comprueba por SSH: sólo existe cuando este
+  # runcmd ha terminado sin errores, así que su sola presencia ya distingue
+  # "todavía arrancando" de "algo falló a medio camino".
+  - path: /etc/seclab-cloud/bootstrap-completo
+    permissions: '0644'
+    owner: root:root
+    content: |
+      pendiente
+
+runcmd:
+  # --- Docker Engine, oficial, no el paquete distro (versión más reciente) ---
+  - |
+    if ! command -v docker >/dev/null 2>&1; then
+      install -m 0755 -d /etc/apt/keyrings
+      if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      fi
+      if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+        . /etc/os-release
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $${VERSION_CODENAME} stable" \
+          > /etc/apt/sources.list.d/docker.list
+      fi
+      apt-get update -y
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    fi
+  - systemctl enable --now docker
+
+  # --- Volúmenes nombrados: se crean si no existen, nunca se recrean ---
+  - docker volume inspect seclab-home >/dev/null 2>&1 || docker volume create seclab-home
+  - docker volume inspect seclab-workspace >/dev/null 2>&1 || docker volume create seclab-workspace
+
+  # --- Autodestrucción opcional por TTL (desactivada salvo opt-in expreso) ---
+  # Ver docs/cloud.md, sección "TTL y autodestrucción": DigitalOcean no ofrece
+  # borrado programado nativo de Droplets. Esto NO es un sustituto de
+  # 'seclab cloud destroy': es un mecanismo de última línea, opt-in, que
+  # requiere depositar en la propia VM un token de API con permiso de borrado
+  # — una superficie de riesgo que el CLI nunca activa por defecto.
+  %{~ if habilitar_autodestruccion ~}
+  - |
+    cat > /etc/seclab-cloud/autodestruir.sh <<'AUTODESTRUIR'
+    #!/bin/sh
+    set -eu
+    . /etc/seclab-cloud/autodestruccion.env
+    curl -fsS -X DELETE \
+      -H "Authorization: Bearer $DO_TOKEN_AUTODESTRUCCION" \
+      "https://api.digitalocean.com/v2/droplets/$DROPLET_ID"
+    AUTODESTRUIR
+    chmod 700 /etc/seclab-cloud/autodestruir.sh
+    echo "DO_TOKEN_AUTODESTRUCCION=${do_token_autodestruccion}" > /etc/seclab-cloud/autodestruccion.env
+    echo "DROPLET_ID=$(curl -fsS -H 'Metadata-Flavor: DigitalOcean' http://169.254.169.254/metadata/v1/id)" >> /etc/seclab-cloud/autodestruccion.env
+    chmod 600 /etc/seclab-cloud/autodestruccion.env
+    echo "/etc/seclab-cloud/autodestruir.sh" | at -t "$(date -d '${fecha_expiracion} 00:05' '+%Y%m%d%H%M' 2>/dev/null || date -j -f '%Y-%m-%d %H:%M' "${fecha_expiracion} 00:05" '+%Y%m%d%H%M')"
+  %{~ endif ~}
+
+  - systemctl daemon-reload
+  - systemctl enable --now seclab.service
+
+  # Marca de fin: sólo se escribe si todo lo anterior no ha fallado
+  # (runcmd corre con 'set -e' implícito de cloud-init: un paso que falla
+  # detiene el resto y esta línea final no se alcanza).
+  - echo "listo $(date -u '+%Y-%m-%dT%H:%M:%SZ')" > /etc/seclab-cloud/bootstrap-completo
+
+final_message: "SecLab bootstrap completado en $UPTIME segundos"

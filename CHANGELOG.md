@@ -7,7 +7,287 @@ proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-Fases 3, 4, 5, 6, 7 y 8 entregadas.
+Fases 3, 4, 5, 6, 7, 8, 9, 10 y 11 entregadas.
+
+### Añadido — Fase 11, GCP y Oracle Cloud (opcional)
+
+- **`terraform/gcp/`**: módulo Terraform para GCP (Compute Engine), mismo
+  patrón que el módulo de referencia de DigitalOcean. `owner` y
+  `fecha_expiracion` obligatorias sin valor por defecto (con `validation` en
+  HCL); imagen publicada por digest/tag inmutable rechazando `:latest`;
+  firewall (`google_compute_firewall`) que sólo abre el puerto SSH
+  configurado. Bootstrap: cloud-init completo (no `startup-script` plano) vía
+  la metadata `user-data`, que las imágenes oficiales de Ubuntu de
+  `ubuntu-os-cloud` ya soportan de fábrica — decisión documentada en
+  `terraform/gcp/main.tf` porque permite reutilizar, casi sin tocarla, la
+  MISMA plantilla `cloud-init.yaml.tftpl` validada en la Fase 10, en vez de
+  reescribir el bootstrap como script de shell plano.
+- **`terraform/oracle/`**: módulo Terraform para Oracle Cloud (OCI Compute).
+  Mismos requisitos de `owner`/`fecha_expiracion`. A diferencia de
+  DigitalOcean y GCP, OCI no ofrece una red por defecto en un tenancy nuevo:
+  el módulo crea su propia VCN, subred, gateway de Internet, tabla de rutas y
+  lista de seguridad (sólo SSH de entrada), para seguir siendo autocontenido.
+  Bootstrap por la misma plantilla de cloud-init (vía metadata `user_data` en
+  base64, datasource "OracleCloud"). Documentado con honestidad el Always
+  Free tier de las formas Ampere `VM.Standard.A1.Flex` y
+  `VM.Standard.E2.1.Micro` como opción de menor riesgo de coste, **sin**
+  prometer gasto cero garantizado (los límites del free tier los fija y
+  cambia Oracle).
+- **Bootstrap reutilizado, no reescrito**: las plantillas
+  `terraform/gcp/templates/cloud-init.yaml.tftpl` y
+  `terraform/oracle/templates/cloud-init.yaml.tftpl` son, línea a línea, casi
+  idénticas a la de `terraform/digitalocean/`: mismo Docker Engine oficial,
+  mismos volúmenes nombrados, mismo servicio systemd `seclab.service`, misma
+  marca `/etc/seclab-cloud/bootstrap-completo` que sondea `seclab cloud
+  wait`. Verificado por render real de ambas plantillas
+  (`terraform templatefile()`/`terraform console`, valores ficticios, con
+  `habilitar_autodestruccion` en `true` y en `false`), validación YAML
+  (`yaml.safe_load`) y `bash -n`/ShellCheck (`--severity=error`) de cada
+  bloque `runcmd` renderizado — mismo cuidado que detectó el bug de
+  indentación de la Fase 10; esta vez no ha aparecido ninguno nuevo.
+- **Autodestrucción opt-in sin token estático en disco (mejora real sobre
+  DigitalOcean)**: en GCP, la instancia usa el token de acceso de su propia
+  cuenta de servicio (servido por el metadata server, de corta vida, nunca
+  escrito a disco) para llamar a `compute.instances.delete` sobre sí misma;
+  en Oracle Cloud, se autentica como "instance principal" (identidad firmada
+  del servidor de metadata de OCI) para llamar a `oci compute instance
+  terminate`. Ambos exigen, a cambio, una concesión de permisos IAM/Policy
+  configurada FUERA de este módulo por un administrador (rol de borrado en
+  GCP; Dynamic Group + Policy en OCI) — documentado sin adornos como el
+  precio de no depositar un secreto estático en la VM.
+- **`seclab cloud plan|up|wait|status|connect|destroy --provider
+  gcp|oracle`**: `lib/cloud.sh` generalizado para los tres proveedores sin
+  duplicar la lógica común (validación de owner/TTL, tabla de coste,
+  confirmación literal `acepto`, snapshot del workspace antes de destruir).
+  Lo único que varía por proveedor está aislado en tres puntos, cada uno con
+  una función `_do`/`_gcp`/`_oracle`: la comprobación de credenciales
+  (`exigir_credenciales_cloud`, que despacha a
+  `exigir_credenciales_do|_gcp|_oracle` — GCP comprueba Application Default
+  Credentials por las mismas rutas que `gcloud`; Oracle Cloud, a propósito,
+  **nunca** comprueba `~/.oci/config`, sólo fuentes declaradas
+  explícitamente en el `.tfvars` o por variable de entorno, para no depender
+  ni siquiera de la existencia de credenciales reales que puedan estar ya en
+  una máquina de desarrollo), la tabla de coste (`tabla_costes_cloud`, una
+  tabla por proveedor con su propia clave de tamaño — `size` en
+  DigitalOcean, `machine_type` en GCP, `shape` en Oracle Cloud —, resuelta
+  por `clave_tamano_tfvars`/`tamano_por_defecto`), y el usuario SSH
+  (`usuario_ssh_cloud`, que lee la salida `ssh_user` de Terraform si el
+  módulo la declara y cae a `root` si no, preservando sin tocarlo el
+  comportamiento exacto de DigitalOcean).
+- **Backend remoto por proveedor, documentado con sus diferencias reales**:
+  GCP usa el backend `"gcs"`, que a diferencia de Spaces (DigitalOcean) y de
+  Object Storage (Oracle Cloud) **sí** tiene locking nativo (precondiciones
+  de generación de objeto de Google Cloud Storage), sin tabla ni servicio
+  adicional. Oracle Cloud, con la misma limitación que DigitalOcean
+  (Object Storage S3-compatible sin locking nativo equivalente a DynamoDB),
+  recomienda Terraform Cloud por el mismo motivo.
+- **`docs/cloud.md`**: extendido con una tabla comparativa de los tres
+  proveedores (backend recomendado, autenticación, usuario SSH, coste
+  aproximado del tamaño por defecto, autodestrucción), secciones específicas
+  de TTL/autodestrucción y notas propias para GCP y Oracle Cloud. Un único
+  documento, no divisiones por proveedor: la mayoría del contenido (flujo,
+  advertencia de coste, snapshot antes de destruir) es idéntico entre los
+  tres y una sola fuente evita que diverjan con el tiempo.
+- **`.gitignore`**: sin cambios necesarios. El patrón `/terraform/**/*.tfvars`
+  (con `**`, introducido ya en la Fase 10 pensando en esta fase) cubre
+  `terraform/gcp/` y `terraform/oracle/` igual que cubre
+  `terraform/digitalocean/`. Verificado con `git check-ignore -q` sobre los
+  nuevos `.tfvars` (ignorados) y los `.example`/`.terraform.lock.hcl` nuevos
+  (versionados).
+- **`make lint`**: el bloque de Terraform ahora ejecuta `fmt -check` y
+  `init -backend=false && validate` sobre los tres módulos.
+  `make cloud-status-gcp` y `make cloud-status-oracle` nuevos, junto al ya
+  existente `make cloud-status` (DigitalOcean).
+
+### Añadido — Fase 10, DigitalOcean (proveedor de referencia, opcional)
+
+- **`terraform/digitalocean/`**: módulo Terraform de referencia (una
+  Droplet, su llave SSH y un firewall explícito que sólo abre SSH de
+  entrada). Un directorio por proveedor a propósito (`terraform/<proveedor>/`,
+  no `terraform/` a secas): la Fase 11 (GCP, Oracle Cloud) añadirá
+  `terraform/gcp/` y `terraform/oracle/` reutilizando el mismo bootstrap y la
+  misma interfaz de CLI, sin mezclar bloques `provider` de proveedores
+  distintos. Detalle de cada archivo en `terraform/digitalocean/README.md`.
+- **`owner` y `fecha_expiracion` obligatorias, sin valor por defecto**, tanto
+  en `variables.tf` (con `validation` en HCL, última barrera si alguien
+  invoca Terraform sin pasar por el CLI) como, antes de eso, en
+  `lib/cloud.sh` (`exigir_owner_y_ttl`), que da el mensaje en español y
+  aborta **antes** de tocar Terraform si faltan. Verificado directamente
+  contra el checkout real (son validaciones de argumentos, no operaciones
+  destructivas): sin `terraform.tfvars`, sin `owner`, con `owner` igual al
+  valor de ejemplo, y sin `fecha_expiracion` — los cuatro casos abortan con
+  el mensaje correcto y sin ejecutar Terraform.
+- **Bootstrap idempotente por cloud-init**
+  (`terraform/digitalocean/templates/cloud-init.yaml.tftpl`): instala Docker
+  Engine oficial (si no está ya), crea los volúmenes nombrados si no existen,
+  y arranca SecLab como servicio **systemd** (`seclab.service`) que hace
+  `docker pull` de `seclab_imagen_ref` (rechazada en `variables.tf` si
+  termina en `:latest`: exige digest o tag inmutable) y `docker run` con un
+  `docker rm -f` previo tolerante a fallo, para que repetir el bootstrap o
+  reiniciar el servicio a mano no falle por "el nombre ya existe". Verificado
+  por render real de la plantilla (`terraform templatefile()`, con
+  `habilitar_autodestruccion` en `true` y en `false`) más validación YAML
+  (`yaml.safe_load`) y ShellCheck de cada bloque `runcmd`; **no probado
+  arrancando una Droplet real** (ver `TESTING_GAPS.md`).
+- **Estimación de coste y confirmación literal**: `seclab cloud plan|up`
+  muestran una tabla de precios aproximados y estáticos de tamaños de
+  Droplet (documentada como tal, con enlace al precio real vigente), repiten
+  de forma prominente que el gasto es personal del alumno, y `up` exige
+  teclear literalmente `acepto` (no una confirmación s/N genérica) antes de
+  llamar a `terraform apply`. Sin terminal interactiva, se niega por
+  sistema. Verificado contra el checkout real, incluida la ruta sin TTY
+  (nunca se auto-aprueba).
+- **`seclab cloud plan|up|wait|status|connect|destroy --provider
+  digitalocean`**: interfaz nueva en `bin/seclab` (`cmd_cloud`, toda la
+  lógica en `lib/cloud.sh` nuevo). `wait` sondea por SSH la marca
+  `/etc/seclab-cloud/bootstrap-completo` con timeout configurable y mensaje
+  de diagnóstico exacto si se agota. `status` lee `terraform output -json` y
+  compara `fecha_expiracion` con la fecha actual, avisando en rojo si ya
+  venció. `destroy` ofrece exportar `/workspace` de la Droplet por SSH (mismo
+  formato tar que `seclab backup`) antes de `terraform destroy`, con una
+  segunda confirmación separada para el borrado.
+- **TTL/autodestrucción**: DigitalOcean no ofrece borrado programado nativo
+  de Droplets (verificado por lectura de su documentación, no inventado). Por
+  defecto, sólo hay recordatorio (`seclab cloud status`), no automatismo. Como
+  mecanismo opt-in (`habilitar_autodestruccion`, por defecto `false`), un
+  `at` en la propia Droplet puede llamar a `DELETE /v2/droplets/{id}` con un
+  token de borrado dedicado — documentado explícitamente como una superficie
+  de riesgo (el token vive en la VM mientras ésta exista), no vendido como
+  gratis. Detalle completo en `docs/cloud.md`, sección "TTL y
+  autodestrucción".
+- **Backend remoto**: tipo `s3` declarado sin valores fijos en `versions.tf`
+  (config parcial vía `-backend-config`, ver `backend.hcl.example`).
+  Documentada la limitación real de DigitalOcean Spaces (sin locking nativo
+  equivalente a DynamoDB) y las dos alternativas que sí funcionan: Terraform
+  Cloud (recomendada para el curso) o AWS S3 con `dynamodb_table` (Terraform
+  < 1.10) o `use_lockfile = true` (Terraform ≥ 1.10). Consecuencia
+  documentada: `seclab cloud status` con backend remoto necesita las mismas
+  credenciales que `apply` para leer el estado.
+- **Secretos fuera del estado**: el `user_data` no lleva ninguna contraseña
+  permanente; las credenciales de VNC/code-server/Jupyter de esa instancia
+  las genera el propio `docker/entrypoint.sh` en el primer arranque del
+  contenedor, igual que en local.
+- **`.gitignore`**: patrones de Terraform pasados a `/terraform/**/...` (antes
+  sólo cubrían la raíz de `terraform/`, no `terraform/digitalocean/`), con
+  negación explícita para los `.example` (`.terraform.lock.hcl` ya se
+  versionaba sin necesitar negación: no coincide con ningún patrón de
+  exclusión). `scripts/verificar-seguridad.sh` actualizado a juego (su lista
+  de patrones exigidos comprobaba el literal antiguo `/terraform/*.tfvars`,
+  que dejó de existir). Verificado con `git check-ignore -q` en los cinco
+  casos y con `./scripts/verificar-seguridad.sh` sin fallos.
+- **`docs/cloud.md`**: flujo completo, advertencia de coste prominente y
+  repetida, tabla de precios aproximados, TTL/autodestrucción real, backend
+  remoto y su limitación, y qué no hace este módulo a propósito.
+- **`make lint`**: nuevo bloque que ejecuta `terraform fmt -check` y
+  `terraform init -backend=false && terraform validate` sobre
+  `terraform/digitalocean/` (nunca `plan`/`apply`/`destroy`), y limpia el
+  `.terraform/` local que genera. Nuevo target `make cloud-status`.
+
+### Añadido — Fase 9, Tailscale
+
+- **`docker-compose.tailscale.yml`**: nodo Tailscale (imagen oficial
+  `tailscale/tailscale`, fijada por versión y digest:
+  `v1.102.3@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680`,
+  ambos resueltos y confirmados a mano durante esta fase) en su **propio
+  contenedor y su propio proyecto de Docker Compose**
+  (`${SECLAB_PROJECT}-tailscale`), nunca el de `lab`. Decisión de
+  arquitectura (documentada largo en el propio archivo, en
+  `docs/tailscale.md` y en `docs/vpn.md`, sección "Convivencia con
+  Tailscale"): de las tres rutas que deja abiertas `prompt_v3.md` (nodo en el
+  host, `tailscale serve`, o sidecar compartiendo el namespace de red de
+  `lab` — esta última explícitamente descartada por el propio prompt), se
+  eligió un contenedor dedicado con ciclo de vida **independiente** de
+  `lab`: `seclab stop`/`restart`/`update`/`limpiar` nunca lo tocan, sólo
+  `seclab tailscale down`. Alcanza los puertos publicados de `lab` por
+  `host.docker.internal` (con `extra_hosts: host-gateway` para Linux) en vez
+  de compartir la red `seclab`, precisamente para que ninguna operación
+  sobre el proyecto de `lab` (que sí borra la red de ese proyecto en cada
+  `down`) pueda arrastrar consigo al contenedor de Tailscale.
+- **`SECLAB_HABILITAR_TAILSCALE`** (ya existía en `.env.example`, ahora
+  con efecto real) gatea la creación del contenedor: en `false` (por
+  defecto) no existe en absoluto. **`TAILSCALE_AUTH_KEY`** sigue siendo el
+  único punto de entrada real: con la variable vacía, el arranque se niega
+  en dos capas — `seclab tailscale up` (CLI, antes de tocar Docker) y el
+  propio `command:` del contenedor (red de seguridad para quien invoque
+  `docker compose` directamente) — con un mensaje claro en ambos casos,
+  nunca "arranca a medias y falla después de forma confusa". Nueva variable
+  `SECLAB_TAILSCALE_HOSTNAME` (opcional, por defecto `seclab`).
+- **Persistencia de estado**: volumen nombrado dedicado
+  `${SECLAB_PROJECT}-tailscale-state` (`/var/lib/tailscale` dentro del
+  contenedor, nunca un bind-mount del repositorio). Sobrevive a `seclab
+  tailscale down` (que sólo borra el contenedor) y a cualquier recreación:
+  verificado escribiendo una marca dentro del volumen y confirmando que
+  sigue tras `docker compose down` + `up` (ver "Verificado" en
+  `TESTING_GAPS.md`).
+- **`lib/docker.sh`**: `compose_tailscale()`, `id_contenedor_tailscale()` y
+  `estado_contenedor_tailscale()` — envoltura de Compose independiente de
+  `compose_seclab()`, a propósito: nunca comparten función, para que ninguna
+  operación sobre `lab` pueda alcanzar por accidente al proyecto de
+  Tailscale.
+- **`bin/seclab tailscale up|status|down`**, mismo estilo que `seclab vpn`:
+  las comprobaciones que no hablan con Docker (flag de habilitación, auth
+  key vacía) se hacen primero, con el mensaje exacto de qué falta; el resto
+  se delega en Compose. `up` pide confirmación para activar
+  `SECLAB_HABILITAR_TAILSCALE` la primera vez, pero a diferencia de `seclab
+  vpn up` **no recrea `lab`**: Tailscale vive en un proyecto de Compose
+  aparte. `status` nunca imprime la auth key ni ningún secreto, y recuerda
+  el comando exacto de `tailscale serve` para publicar un puerto de `lab`
+  hacia la tailnet (nunca hacia Internet). Añadidas a `mostrar_ayuda()` (nueva
+  sección "ACCESO REMOTO") y al dispatcher de `main()`.
+- **`seclab doctor`**: nueva comprobación de convivencia con las VPN de
+  plataforma (Fase 7). Con la arquitectura elegida, Tailscale y las VPN de
+  `lab` viven en namespaces de red distintos — no hay una tabla de rutas
+  compartida que puedan disputarse dentro de Docker —, así que la
+  comprobación real no es "¿han chocado?" sino "¿siguen aislados de
+  verdad?": confirma que el contenedor `tailscale` no declara
+  `network_mode: container:...` ni `service:...`, y si además hay una VPN de
+  plataforma activa en `lab` a la vez, lo señala explícitamente como "sin
+  conflicto posible" y explica por qué (`--route-nopull` en `lab`,
+  `--accept-routes=false` en Tailscale). Documentado también qué caso SÍ
+  produciría el conflicto real que describe `prompt_v3.md` (Tailscale y una
+  VPN de plataforma, ambos fuera de Docker, en el propio sistema operativo
+  del alumno) y por qué queda fuera del alcance de SecLab.
+- **`scripts/verificar-seguridad.sh`**: sección 4 ampliada para analizar
+  `docker-compose.tailscale.yml` también, por separado (nunca combinado con
+  los archivos de `lab`, porque nunca se aplican juntos de verdad):
+  configuración válida, sin puertos publicados, sin privilegios ni
+  `container_name` fijo.
+- **`scripts/ci/probar-tailscale.sh`** y job `tailscale-test` en
+  `.github/workflows/ci.yml`: smoke test **sin conexión real** a la red de
+  Tailscale (`prompt_v3.md` prohíbe expresamente generar una auth key real).
+  Verifica: rechazo sin `TAILSCALE_AUTH_KEY` (por el CLI y, por separado, por
+  el propio contenedor sin pasar por el CLI); con una auth key de prueba
+  obviamente inválida apuntando a un servidor de control **local e
+  inexistente** (`--login-server=http://127.0.0.1:1`, nunca el real
+  `controlplane.tailscale.com`) el contenedor sigue vivo reintentando el
+  login sin caerse, el rechazo queda en los logs como `connection refused`
+  puramente local, y la auth key nunca aparece en ningún log; persistencia
+  del volumen de estado tras recrear el contenedor; aislamiento real de red
+  y de proyecto de Compose frente a `lab`; y que `lab` arranca con
+  normalidad, sin ganar ningún privilegio sólo por tener Tailscale
+  habilitado. El detalle de por qué el `--login-server` local (se detectó
+  durante el desarrollo de este mismo script que, sin él, una auth key
+  inválida igualmente abre una conexión TLS real hacia los servidores de
+  Tailscale antes de ser rechazada) está documentado en el propio script y
+  en `docs/tailscale.md`.
+- **`docs/tailscale.md`** (nuevo): arquitectura elegida y por qué (con las
+  dos alternativas descartadas explicadas), flujo paso a paso para crear una
+  auth key real (lo hace el profesor/alumno, nunca SecLab), comandos del
+  CLI, cómo publicar un servicio de `lab` hacia la tailnet con `tailscale
+  serve`, convivencia con VPN de plataforma, y qué verifica el smoke test
+  frente a lo que queda sin verificar. `docs/vpn.md`, sección "Convivencia
+  con Tailscale", actualizada para enlazarlo y reflejar la implementación
+  real en vez del aviso de "todavía no implementado" de la Fase 7.
+  `docs/README.md` actualizado (Tailscale pasa de "Pendiente" a la sección
+  "Uso").
+- **`Makefile`**: nuevos objetivos `tailscale-status`/`tailscale-down`;
+  `lint` valida `docker-compose.tailscale.yml` por separado y comprueba la
+  sintaxis de `scripts/ci/probar-tailscale.sh`.
+- **`.gitignore`**: ya traía `/tailscale-state/` desde la Fase 1 como patrón
+  para un eventual bind-mount; revisado y confirmado que no hace falta
+  tocarlo — el estado real de esta fase vive en un volumen de Docker
+  nombrado, no en un directorio del host, así que ese patrón queda como red
+  de seguridad sin uso activo, no como algo que haya que ajustar.
 
 ### Añadido — Fase 8, CI/CD y supply chain
 

@@ -26,10 +26,20 @@
 /mcp-state/
 
 # --- Terraform ---
-/terraform/.terraform/
-/terraform/*.tfstate
-/terraform/*.tfstate.backup
-/terraform/*.tfvars
+# Con ** para cubrir también los módulos por proveedor (terraform/digitalocean/,
+# terraform/gcp/, terraform/oracle/ en la Fase 11), no sólo la raíz de
+# terraform/: sin el doble asterisco, un terraform.tfvars con el token real de
+# un alumno dentro de terraform/digitalocean/ se habría colado en Git.
+/terraform/**/.terraform/
+/terraform/**/*.tfstate
+/terraform/**/*.tfstate.backup
+/terraform/**/*.tfvars
+# .terraform.lock.hcl NO coincide con ninguno de los patrones de arriba: se
+# versiona a propósito (práctica recomendada de Terraform, fija qué versión
+# exacta de cada provider se ha usado y verificado).
+# Los ejemplos, evidentemente ficticios, sí se versionan.
+!/terraform/**/*.tfvars.example
+!/terraform/**/backend.hcl.example
 
 # --- Lenguajes y editores ---
 __pycache__/

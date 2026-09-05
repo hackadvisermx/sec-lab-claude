@@ -1,0 +1,118 @@
+# =============================================================================
+# SecLab — nodo Tailscale dedicado (Fase 9, opcional)
+# =============================================================================
+# Decisión de arquitectura (ver docs/tailscale.md y docs/vpn.md, sección
+# "Convivencia con Tailscale"; no reabrir sin releer ambas): Tailscale vive en
+# un contenedor PROPIO, en su PROPIO proyecto de Docker Compose — nunca como
+# sidecar de 'lab' ni compartiendo su `network_mode`. `name:` de más abajo lo
+# deja en `${SECLAB_PROJECT}-tailscale`, un proyecto de Compose distinto del
+# de 'lab' (`${SECLAB_PROJECT}`, ver docker-compose.yml). Por eso este archivo
+# NUNCA se añade a la lista de `compose_seclab()` (lib/docker.sh): un
+# `seclab stop`/`restart`/`update`/`limpiar` — que sólo hablan con el proyecto
+# de 'lab' — no lo tocan ni por accidente. Sólo lo hace `compose_tailscale()`,
+# invocada exclusivamente por `seclab tailscale up|down|status`.
+#
+# Por qué un proyecto de Compose aparte y no un servicio más dentro del mismo
+# proyecto que 'lab': un `seclab stop` hace `docker compose down` sobre el
+# proyecto de 'lab', que borra también la red que ese `down` gestiona. Si
+# 'tailscale' viviera en esa misma red compartida, cada `seclab stop` con
+# Tailscale arriba fallaría a medias (Docker no permite borrar una red con
+# contenedores todavía enganchados) o, peor, se llevaría a Tailscale por
+# delante si algún día alguien cambia `down` por `down --remove-orphans`. Con
+# un proyecto y una red propios, 'tailscale' es indiferente a cualquier
+# operación sobre 'lab': puede seguir arriba con 'lab' parado, reiniciándose
+# o recreándose — que es precisamente el caso de uso que motiva esta fase
+# (Tailscale como única vía de entrada a una VM en la nube, Fase 10/11).
+#
+# Cómo alcanza 'tailscale' los servicios de 'lab' sin compartir red: por
+# `host.docker.internal`, que apunta a la máquina donde corre el propio
+# demonio Docker (el host real en Linux; la VM ligera de Docker Desktop en
+# macOS/Windows, que también expone ahí los puertos publicados de 'lab').
+# Docker Desktop la resuelve solo; en Linux hace falta declararla a mano
+# (`extra_hosts` con `host-gateway`, disponible desde Docker 20.10). Con eso,
+# 'tailscale' llega a 'lab' exactamente igual que lo haría tu propio host: por
+# los puertos que 'lab' ya publica en 127.0.0.1 (SECLAB_PUERTO_SSH, etc.), ni
+# uno más. `seclab tailscale status` recuerda el comando exacto de
+# `tailscale serve` para publicarlos hacia la tailnet (ver docs/tailscale.md).
+#
+# Imagen oficial de Tailscale, fijada por versión Y por digest (política de
+# prompt_v3.md para herramientas de publicación oficial: versión exacta +
+# checksum verificado). Resuelto y verificado a mano durante esta fase:
+#   docker pull tailscale/tailscale:v1.102.3
+#     -> Digest: sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+#   docker pull tailscale/tailscale:stable   (misma fecha)
+#     -> mismo digest: confirma que v1.102.3 era la versión "stable" vigente
+#        al fijar esta referencia.
+# =============================================================================
+
+name: ${SECLAB_PROJECT:-seclab}-tailscale
+
+services:
+  tailscale:
+    image: tailscale/tailscale:v1.102.3@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+    restart: unless-stopped
+    hostname: ${SECLAB_TAILSCALE_HOSTNAME:-seclab}
+
+    # NET_ADMIN y /dev/net/tun, sólo aquí — nunca en 'lab'. Mismo criterio que
+    # docker-compose.vpn.yml (Fase 7): la capacidad de crear interfaces y
+    # manipular rutas se concede exclusivamente a quien de verdad la necesita,
+    # nunca "por si acaso" al contenedor de laboratorio.
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+
+    # Necesario en Linux para que host.docker.internal resuelva (ver la nota
+    # de arriba); en Docker Desktop (macOS/Windows) ya funciona sin esto, pero
+    # declararlo ahí no rompe nada.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    environment:
+      # Único punto de entrada real de la auth key. Vacía por defecto
+      # (.env.example): con ella vacía, el `command` de más abajo hace fallar
+      # el arranque con un mensaje claro ANTES de que tailscaled intente nada.
+      # 'bin/seclab' ya rechaza 'tailscale up' antes de llegar aquí si está
+      # vacía; esta comprobación es la red de seguridad para quien invoque
+      # `docker compose` directamente, sin pasar por el CLI.
+      TS_AUTHKEY: ${TAILSCALE_AUTH_KEY:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_HOSTNAME: ${SECLAB_TAILSCALE_HOSTNAME:-seclab}
+      # --accept-routes=false: SecLab no acepta en este nodo rutas anunciadas
+      # por otros nodos de la tailnet (equivalente Tailscale de
+      # --route-nopull en OpenVPN, Fase 7). Es lo que permite documentar con
+      # certeza que este nodo nunca secuestra la ruta por defecto del
+      # contenedor por una decisión tomada en otra parte de la tailnet.
+      # --accept-dns=false: por el mismo motivo, no se acepta el MagicDNS
+      # empujado por la tailnet; el DNS del contenedor sigue siendo el que
+      # gestiona Docker.
+      TS_EXTRA_ARGS: --accept-routes=false --accept-dns=false
+
+    volumes:
+      # Volumen nombrado dedicado (ver .gitignore: /tailscale-state/ es el
+      # patrón para un montaje por bind que este diseño NO usa; el estado real
+      # vive en un volumen de Docker, no en un directorio del host). Sobrevive
+      # a `docker compose up`/recreaciones del contenedor: la identidad del
+      # nodo y sus claves no se piden dos veces por reiniciar el contenedor.
+      - tailscale-state:/var/lib/tailscale
+
+    # El arranque falla con un mensaje claro y en español si falta la auth
+    # key, en vez de dejar a tailscaled arrancado pero sin unirse a la
+    # tailnet (el comportamiento por defecto de la imagen oficial sin
+    # TS_AUTHKEY): prompt_v3.md exige explícitamente que el fallo sea
+    # temprano y claro, nunca tardío y confuso.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -z "$$TS_AUTHKEY" ]; then
+          echo "[SecLab] TAILSCALE_AUTH_KEY vacía: el nodo Tailscale no arranca sin ella." >&2
+          echo "[SecLab] Crea una en https://login.tailscale.com/admin/settings/keys" >&2
+          echo "[SecLab] (flujo completo en docs/tailscale.md), ponla en .env y repite:" >&2
+          echo "[SecLab]   seclab tailscale up" >&2
+          exit 1
+        fi
+        exec /usr/local/bin/containerboot
+
+volumes:
+  tailscale-state:
+    name: ${SECLAB_PROJECT:-seclab}-tailscale-state

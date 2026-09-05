@@ -1,0 +1,137 @@
+#cloud-config
+# =============================================================================
+# SecLab — bootstrap de la instancia OCI (cloud-init)
+# =============================================================================
+# Generado por terraform/oracle/main.tf a partir de esta plantilla, publicado
+# (codificado en base64 por Terraform, `base64encode()`) en la metadata
+# `user_data` de la instancia. Las imágenes de Ubuntu de OCI traen cloud-init
+# con el datasource "OracleCloud", que lee exactamente esa clave.
+#
+# Esta plantilla es DELIBERADAMENTE casi idéntica a la de DigitalOcean y GCP:
+# instalar Docker, traer la imagen de SecLab por digest/tag inmutable desde
+# ${seclab_registro}, y arrancarla mediante un servicio systemd. La única
+# diferencia real de fondo está en el bloque de autodestrucción opcional.
+#
+# Idempotencia y secretos: igual que en los otros dos módulos — ver sus
+# comentarios equivalentes en terraform/digitalocean/ y terraform/gcp/.
+# =============================================================================
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - at
+
+write_files:
+  - path: /etc/seclab-cloud/entorno
+    permissions: '0600'
+    owner: root:root
+    content: |
+      SECLAB_IMAGEN_REF=${seclab_imagen_ref}
+      SECLAB_NOMBRE_CONTENEDOR=${nombre_contenedor}
+      SECLAB_OWNER=${owner}
+      SECLAB_PROPOSITO=${proposito}
+      SECLAB_FECHA_EXPIRACION=${fecha_expiracion}
+      SECLAB_PUERTO_SSH=${puerto_ssh}
+
+  - path: /etc/systemd/system/seclab.service
+    permissions: '0644'
+    owner: root:root
+    content: |
+      [Unit]
+      Description=SecLab (contenedor docente)
+      After=docker.service network-online.target
+      Requires=docker.service
+      Wants=network-online.target
+
+      [Service]
+      EnvironmentFile=/etc/seclab-cloud/entorno
+      ExecStartPre=-/usr/bin/docker rm -f ${nombre_contenedor}
+      ExecStartPre=/usr/bin/docker pull $${SECLAB_IMAGEN_REF}
+      ExecStart=/usr/bin/docker run --rm --name $${SECLAB_NOMBRE_CONTENEDOR} \
+        -p 127.0.0.1:8080:8080 \
+        -p 127.0.0.1:6080:6080 \
+        -p 127.0.0.1:8443:8443 \
+        -p 127.0.0.1:8888:8888 \
+        -p $${SECLAB_PUERTO_SSH}:22 \
+        -v seclab-home:/home/seclab \
+        -v seclab-workspace:/workspace \
+        $${SECLAB_IMAGEN_REF}
+      ExecStop=/usr/bin/docker stop -t 30 ${nombre_contenedor}
+      Restart=on-failure
+      RestartSec=5s
+      TimeoutStartSec=300
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Marca que 'seclab cloud wait' comprueba por SSH, igual que en los otros
+  # dos módulos.
+  - path: /etc/seclab-cloud/bootstrap-completo
+    permissions: '0644'
+    owner: root:root
+    content: |
+      pendiente
+
+runcmd:
+  # --- Docker Engine, oficial, no el paquete distro ---
+  - |
+    if ! command -v docker >/dev/null 2>&1; then
+      install -m 0755 -d /etc/apt/keyrings
+      if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      fi
+      if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+        . /etc/os-release
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $${VERSION_CODENAME} stable" \
+          > /etc/apt/sources.list.d/docker.list
+      fi
+      apt-get update -y
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    fi
+  - systemctl enable --now docker
+
+  # --- Volúmenes nombrados: se crean si no existen, nunca se recrean ---
+  - docker volume inspect seclab-home >/dev/null 2>&1 || docker volume create seclab-home
+  - docker volume inspect seclab-workspace >/dev/null 2>&1 || docker volume create seclab-workspace
+
+  # --- Autodestrucción opcional por TTL (desactivada salvo opt-in expreso) ---
+  # Usa 'oci-cli' con autenticación por "instance principal": la instancia
+  # obtiene su propia identidad firmada del servidor de metadata de OCI, sin
+  # ningún token estático en disco. Requiere que la tenancy tenga, de
+  # antemano y fuera de este módulo, un Dynamic Group + Policy que permita a
+  # esta instancia terminarse a sí misma (ver variables.tf,
+  # habilitar_autodestruccion, y docs/cloud.md). Sin esa política, este
+  # script fallará al llegar la fecha — con el mismo resultado que no haberlo
+  # activado: la instancia sigue existiendo y facturando, y 'seclab cloud
+  # status' lo seguirá recordando en rojo.
+  %{~ if habilitar_autodestruccion ~}
+  - |
+    if ! command -v oci >/dev/null 2>&1; then
+      apt-get install -y python3-pip
+      pip3 install --no-cache-dir --break-system-packages oci-cli || pip3 install --no-cache-dir oci-cli
+    fi
+  - |
+    cat > /etc/seclab-cloud/autodestruir.sh <<'AUTODESTRUIR'
+    #!/bin/sh
+    set -eu
+    INSTANCE_ID=$(curl -fsS -H 'Authorization: Bearer Oracle' \
+      'http://169.254.169.254/opc/v2/instance/' \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+    oci compute instance terminate --instance-id "$INSTANCE_ID" --auth instance_principal --force
+    AUTODESTRUIR
+    chmod 700 /etc/seclab-cloud/autodestruir.sh
+    echo "/etc/seclab-cloud/autodestruir.sh" | at -t "$(date -d '${fecha_expiracion} 00:05' '+%Y%m%d%H%M' 2>/dev/null || date -j -f '%Y-%m-%d %H:%M' "${fecha_expiracion} 00:05" '+%Y%m%d%H%M')"
+  %{~ endif ~}
+
+  - systemctl daemon-reload
+  - systemctl enable --now seclab.service
+
+  # Marca de fin: sólo se escribe si todo lo anterior no ha fallado.
+  - echo "listo $(date -u '+%Y-%m-%dT%H:%M:%SZ')" > /etc/seclab-cloud/bootstrap-completo
+
+final_message: "SecLab bootstrap completado en $UPTIME segundos"

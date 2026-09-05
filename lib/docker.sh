@@ -173,6 +173,35 @@ servicio_activo() {
     servicios_activos | grep -qx "$1"
 }
 
+# -----------------------------------------------------------------------------
+# Tailscale (Fase 9) — proyecto de Compose INDEPENDIENTE del de 'lab'
+# -----------------------------------------------------------------------------
+# compose_tailscale ARGS...
+#
+# A propósito, NUNCA comparte función con compose_seclab(): esa es la
+# decisión de diseño de la Fase 9 (ver docker-compose.tailscale.yml y
+# docs/tailscale.md) — Tailscale vive en su propio proyecto de Compose
+# (`${SECLAB_PROJECT}-tailscale`), con su propio ciclo de vida, para que
+# ninguna operación sobre 'lab' (`seclab stop`, `restart`, `update`,
+# `limpiar`) lo detenga ni lo recree por accidente. Sólo `seclab tailscale
+# up|down|status` llama a esta función.
+compose_tailscale() {
+    ( cd "$SECLAB_RAIZ" && docker compose -f docker-compose.tailscale.yml "$@" )
+}
+
+# id_contenedor_tailscale -> id del servicio 'tailscale', vacío si no existe
+id_contenedor_tailscale() {
+    compose_tailscale ps -q tailscale 2>/dev/null | head -1
+}
+
+# estado_contenedor_tailscale -> running | exited | creado | ausente
+estado_contenedor_tailscale() {
+    local id
+    id="$(id_contenedor_tailscale)"
+    if [ -z "$id" ]; then printf 'ausente'; return; fi
+    docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || printf 'ausente'
+}
+
 # vpn_perfiles_activos -> perfiles de VPN con túnel/proceso en marcha dentro de
 # 'lab', uno por línea (ninguno, uno o los tres a la vez). Mismo patrón que
 # servicios_activos(): la fuente de verdad vive dentro del contenedor

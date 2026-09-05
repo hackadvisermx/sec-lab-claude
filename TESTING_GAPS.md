@@ -493,7 +493,237 @@ contenedor, volumen ni red huérfanos con el prefijo de prueba.
 
 ---
 
+## Fase 9 — Tailscale con acceso remoto comprobado
+
+**Nota de seguridad sobre esta verificación** (misma advertencia que abre la
+Fase 8, y sigue vigente en esta sesión): todo lo que arranca, detiene o
+recrea contenedores se ejecutó exclusivamente sobre una copia física
+completa en `/tmp` (`rsync -a --exclude .git --exclude .env --exclude vpn
+--exclude workspace --exclude secretos --exclude backups`), con nombres de
+proyecto de Compose únicos (`seclabtsci`, y varios sufijos de depuración
+manual: `seclabtsci2`, `seclabtsdbg`, `seclabtsdoctor`) que nunca
+coincidieron con `seclab`. Antes y después de cada prueba se confirmó con
+`docker ps --format '{{.Names}}\t{{.ID}}\t{{.Status}}' | grep seclab-lab-1`
+que el contenedor real del usuario mantenía el mismo ID (`18231aa50edf`) y el
+mismo estado (`Up ... (healthy)`); nunca cambió. Al terminar, se destruyó la
+copia de `/tmp` completa y se confirmó con `docker ps -a`/`docker volume
+ls`/`docker network ls` que no quedó ningún contenedor, volumen ni red
+huérfanos con ninguno de esos prefijos.
+
+**Nunca se generó una auth key real de Tailscale ni se creó una cuenta**:
+`prompt_v3.md` lo prohíbe explícitamente para esta fase. Todas las pruebas
+usaron o bien una `TAILSCALE_AUTH_KEY` vacía (para probar el rechazo) o un
+valor de prueba que a propósito NO usa el prefijo real `tskey-auth-` (ver el
+comentario en el propio script: ese prefijo es justo lo que
+`scripts/verificar-seguridad.sh` busca para detectar una key real filtrada),
+obviamente
+inválido y jamás usado contra la infraestructura real de Tailscale — ver el
+punto siguiente.
+
+**Aviso honesto sobre un incidente menor durante la verificación manual (no
+en el script que queda en el repositorio)**: al escribir por primera vez el
+smoke test, una versión inicial de la comprobación 2 (auth key inválida)
+dejó que `tailscaled` intentara autenticarse contra el control plane REAL de
+Tailscale (`controlplane.tailscale.com`) antes de ser rechazado por la key
+inválida — una conexión TLS real, aunque sin éxito y sin exponer ningún dato
+salvo la key de prueba obviamente falsa. Se detectó revisando los logs del
+contenedor, se corrigió de inmediato añadiendo `--login-server=http://127.0.0.1:1`
+(un puerto local en el que nunca escucha nada, dentro del propio contenedor)
+para que el mismo comportamiento se observe sin que salga ningún paquete de
+la máquina, y **`scripts/ci/probar-tailscale.sh`, tal como queda en el
+repositorio, usa siempre esa variante local**. Aparte, durante la
+verificación manual e interactiva de `seclab doctor`/`seclab tailscale
+status` con un contenedor ya arrancado (sección "Verificado" más abajo), se
+dejó pasar unos ~3 segundos con una auth key de prueba SIN el
+`--login-server` local antes de detener el contenedor — tiempo suficiente
+para que `tailscaled` abriera una conexión real hacia Tailscale con una key
+inválida, nunca aceptada, sin crear ningún nodo ni sesión. Se documenta aquí
+sin minimizarlo: no debería haber ocurrido, ninguna prueba automatizada del
+repositorio lo repite, y la lección (usar siempre un `--login-server` local
+para cualquier prueba con auth key no vacía) queda explícita en
+`docs/tailscale.md` y en los comentarios del propio script.
+
+### Verificado
+
+| Prueba | Resultado |
+|---|---|
+| `bash -n`/`sh -n` sobre `docker-compose.tailscale.yml` (vía `docker compose config`), `bin/seclab`, `lib/docker.sh`, `scripts/ci/probar-tailscale.sh` | Sintaxis válida en todos |
+| ShellCheck (`--severity=error`) sobre `bin/seclab`, `lib/*.sh`, `scripts/*.sh`, `scripts/ci/*.sh` (incluido el `probar-tailscale.sh` nuevo) | Sin errores |
+| `docker compose -f docker-compose.tailscale.yml config` en el checkout real (sólo lectura) | Configuración válida; confirmado que `$$TS_AUTHKEY` en el `command:` se resuelve a `$TS_AUTHKEY` en el contenedor real en tiempo de ejecución (comprobado con un compose de prueba desechable en `/tmp`, no en el checkout), no en el momento de `config` (que muestra el `$$` sin colapsar a propósito, por diseño de Compose, para poder mostrar el archivo tal cual se re-interpretará) |
+| `docker compose -f docker-compose.yml -f docker-compose.tailscale.yml config` (combinación hipotética, nunca usada por el CLI) | También válida sintácticamente, aunque el diseño real nunca las combina |
+| Resolución y verificación del digest de la imagen oficial (`docker pull tailscale/tailscale:v1.102.3` y `:stable`, mismo digest en ambos: `sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680`) | Confirmado; versión y digest fijados en `docker-compose.tailscale.yml` |
+| `./scripts/verificar-seguridad.sh` en el checkout real, con la nueva comprobación de `docker-compose.tailscale.yml` | Sin fallos, 0 avisos |
+| `make lint` en el checkout real (incluida la nueva validación de `docker-compose.tailscale.yml` y la sintaxis de `probar-tailscale.sh`) | Sin fallos (mismos avisos preexistentes de Hadolint ya documentados en la Fase 8) |
+| `scripts/ci/probar-tailscale.sh` de extremo a extremo, en una copia de `/tmp`, proyecto `seclabtsci` | Las 9 comprobaciones pasan: (1) `seclab tailscale up` rechaza sin `TAILSCALE_AUTH_KEY` antes de tocar Docker; (1b) el propio contenedor se niega igual sin pasar por el CLI; (2/2b) con una auth key de prueba inválida contra un `--login-server` local inexistente, el contenedor sigue vivo, el rechazo es un `connection refused` local y la key nunca aparece en los logs; (3) el volumen de estado sobrevive a `down`+`up`; (4) el contenedor vive en su propio namespace de red y su propio proyecto de Compose; (5) `lab` arranca sin ganar privilegios por tener Tailscale habilitado |
+| Limpieza tras `probar-tailscale.sh` (su propio `trap limpiar EXIT`) | Confirmado sin contenedores, volúmenes ni redes residuales del proyecto `seclabtsci`; `seclab-lab-1` sin cambios en ID ni estado |
+| `seclab tailscale status`/`seclab tailscale down` con el contenedor ausente, y `seclab doctor` con `SECLAB_HABILITAR_TAILSCALE=true` y `TAILSCALE_AUTH_KEY` vacía | Mensajes verificados a mano en la copia de `/tmp`: "Contenedor ausente", "TAILSCALE_AUTH_KEY está vacía: 'seclab tailscale up' se negará a arrancarlo", "El contenedor 'tailscale' no está en marcha" |
+| `seclab doctor` con el contenedor `tailscale` realmente arrancado (vía `docker compose up -d tailscale`, no `docker compose run`, que Compose no lista igual — ver nota abajo) | La comprobación de convivencia (`comprobar_convivencia_tailscale`) reporta correctamente "'tailscale' vive en su propio namespace de red (...); no comparte tabla de rutas con 'lab'"; `seclab tailscale status` mostró `Logged out.` (esperado, sin key real) sin imprimir la key en ningún momento |
+| Comportamiento de `docker compose ps`/`ps -q <servicio>` con contenedores creados vía `docker compose run` (usado sólo en depuración manual, nunca en el script final) | Un contenedor de `run` no aparece en `docker compose ps -q <servicio>` sin `-a`; es una particularidad de Compose (los oneoffs de `run` se etiquetan distinto), no un fallo de `id_contenedor_tailscale()` — el flujo real (`seclab tailscale up`, que usa `up -d`, no `run`) no se ve afectado, y así quedó confirmado al repetir la prueba con `up -d` |
+
+### No verificado
+
+| Prueba | Motivo | Alternativa |
+|---|---|---|
+| **Unirse de verdad a una tailnet con una auth key real** | `prompt_v3.md` prohíbe expresamente generar una auth key real de Tailscale para este proyecto; no hay cuenta del curso | Cuando el curso tenga una cuenta de Tailscale: crear una auth key efímera y de mínimo privilegio siguiendo `docs/tailscale.md`, ejecutar `seclab tailscale up` y confirmar con `seclab tailscale status` que el nodo aparece como conectado (no "Logged out"), con una IP en el rango `100.64.0.0/10` |
+| **`tailscale serve` sirviendo tráfico real hacia otro dispositivo de la tailnet** | Depende de lo anterior (nodo autenticado de verdad) | Con un nodo real autenticado: ejecutar el comando exacto que imprime `seclab tailscale status`, y desde OTRO dispositivo de la misma tailnet, confirmar que el SSH de `lab` responde a través de la IP/hostname de Tailscale del nodo |
+| **Convivencia real con una VPN de plataforma activa a la vez que un nodo Tailscale autenticado de verdad** | Se verificó por diseño y por inspección (namespaces de red separados, `--route-nopull` en `lab`, `--accept-routes=false` en Tailscale) y `seclab doctor` confirma la separación de namespaces de forma automatizada, pero no se ha repetido con AMBOS conectados de verdad a la vez (un nodo Tailscale autenticado y un túnel OpenVPN de prueba activo en `lab` simultáneamente), por la misma razón que el punto anterior: no hay auth key real con la que probarlo | El razonamiento arquitectónico (namespaces de red de Docker completamente separados) no depende de que la autenticación haya tenido éxito o no: un `tailscaled` "logged out" ya vive en el mismo namespace aislado que uno autenticado. La comprobación automatizada de `seclab doctor` es la misma en ambos casos |
+| **`host.docker.internal` en Linux nativo (no Docker Desktop)** | La verificación de esta fase se hizo en macOS con Docker Desktop, donde `host.docker.internal` funciona sin nada que declarar; en Linux depende del `extra_hosts: host-gateway` añadido en `docker-compose.tailscale.yml`, disponible desde Docker 20.10, pero no se ha ejecutado en Linux nativo en esta sesión | El mecanismo (`extra_hosts` con `host-gateway`) es una característica documentada de Docker Engine desde la versión 20.10, no específica de Docker Desktop; no debería haber sorpresas, pero sigue siendo la misma brecha de plataforma (sólo macOS arm64 verificado) que arrastran las fases anteriores |
+| **Windows/WSL2 para cualquier parte de esta fase** | Sólo macOS arm64, igual que el resto del proyecto | Sigue siendo la brecha más importante del proyecto, ya señalada en fases anteriores |
+| **Despliegue real en una VM cloud con Tailscale como única vía de entrada (el caso de uso que motiva esta fase)** | Depende de las Fases 10-11 (cloud), todavía sin implementar, y de una auth key real | Cuando existan ambas: desplegar la VM sin publicar SSH a Internet, arrancar `tailscale` con una auth key real durante el bootstrap, y confirmar que `seclab tailscale status`/`ssh` a través de la IP de Tailscale son la única vía de acceso funcional |
+
+---
+
+## Fase 10 — DigitalOcean (proveedor de referencia, opcional)
+
+**Contexto importante de esta sesión, para quien retome el trabajo**: esta
+fase se implementó bajo una regla de seguridad explícita y no negociable —
+nunca ejecutar `terraform apply`, `plan` ni `destroy` de verdad contra
+DigitalOcean, nunca buscar ni usar credenciales reales de esta máquina, y
+nunca generar un token o una llave que pudieran confundirse con reales. Como
+consecuencia, y dicho sin adornos: **casi todo lo entregado en esta fase es
+sintaxis validada y diseño revisado por lectura, no ejecución real contra la
+API de DigitalOcean.** No se creó, ni se intentó crear, ningún recurso cloud
+real en ningún momento de esta sesión. Tampoco se tocó `seclab-lab-1` (el
+contenedor de desarrollo real): se confirmó su ID y su estado (`healthy`)
+antes y después del trabajo de esta fase, y ninguna prueba ejecutada arranca,
+detiene ni recrea contenedores Docker.
+
+### Verificado
+
+| Prueba | Resultado |
+|---|---|
+| `terraform fmt -check -diff` sobre `terraform/digitalocean/` | Sin diferencias |
+| `terraform init -backend=false` + `terraform validate` sobre `terraform/digitalocean/` | Válido. Es el único modo de `init` ejecutado: nunca con el backend real, nunca con credenciales de proveedor |
+| Render real de `templates/cloud-init.yaml.tftpl` con `terraform templatefile()` (variables ficticias, sin recursos) | Detectado y corregido un bug real de indentación: `%{ if ... ~}` sin `~` de apertura dejaba la indentación de la línea del `if` pegada a la primera línea del bloque, rompiendo el YAML cuando `habilitar_autodestruccion=true`. Corregido a `%{~ if ... ~}` / `%{~ endif ~}`; re-renderizado y verificado en ambos valores (`true` y `false`) |
+| El cloud-init renderizado es YAML válido (`yaml.safe_load`, Python) | Correcto en ambas ramas de `habilitar_autodestruccion` |
+| ShellCheck de cada entrada de `runcmd` del cloud-init renderizado | Sin avisos de severidad error ni warning reales (un único SC1091 informativo por `. /etc/os-release`, esperado: ese archivo no existe en la máquina de desarrollo) |
+| `bash -n` y ShellCheck (`--severity=error` y por defecto) de `lib/cloud.sh` y de `bin/seclab` completo | Sin errores. Se corrigieron dos avisos de estilo (SC2034, variables sin usar) |
+| **Bug real de `set -e` encontrado y corregido durante la verificación** (ver más abajo) | Corregido |
+| Rechazo de `seclab cloud plan\|up` sin `--provider` | Correcto, mensaje claro |
+| Rechazo con `--provider` desconocido (`aws`) | Correcto: explica que sólo DigitalOcean existe en esta fase |
+| Rechazo sin `terraform.tfvars` (ni el indicado por `--tfvars` existe) | Correcto, indica copiar el `.example` |
+| Rechazo con `owner` ausente | Correcto |
+| Rechazo con `owner = "tu-nombre-aqui"` (el valor de ejemplo, sin cambiar) | Correcto |
+| Rechazo con `fecha_expiracion` ausente | Correcto |
+| Rechazo sin token de DigitalOcean (`DIGITALOCEAN_TOKEN` sin definir y sin `do_token` real en el `.tfvars`) — con `owner`/TTL correctos | Correcto, y confirmado que esto ocurre **antes** de invocar a Terraform (ningún proceso `terraform` se lanzó en esta prueba) |
+| `seclab cloud up` sin terminal interactiva (stdin no es un TTY) | Se niega por sistema con mensaje claro, nunca se auto-aprueba; confirmado que no llegó a ejecutar `terraform apply` |
+| `seclab cloud status --provider digitalocean` sin estado ni backend inicializado | Falla con el mensaje documentado sobre la limitación de backend remoto, sin crear ningún directorio `.terraform/` ni tocar red |
+| `.gitignore`: `terraform/digitalocean/terraform.tfvars` ignorado; `terraform.tfvars.example`, `backend.hcl.example` y `.terraform.lock.hcl` versionados | Confirmado con `git check-ignore -q` (código de salida) en los cinco casos |
+| `git add -n terraform/` sólo añade los archivos de código/documentación esperados (nunca `.tfvars` ni `.terraform/`) | Correcto |
+| `make lint` completo (incluido el nuevo bloque de Terraform) | Sin fallos |
+| `./scripts/verificar-seguridad.sh` sobre el checkout real tras los cambios | Sin fallos ni avisos nuevos |
+| `seclab-lab-1` (contenedor real de desarrollo): ID y estado `healthy` antes y después de todas las pruebas de esta fase | Sin cambios; nunca se ejecutó `docker` contra él desde esta fase |
+
+**Bug de `set -e` encontrado durante la verificación** (documentado aquí en
+detalle porque es la clase de fallo más peligrosa de este archivo: silenciosa,
+sin ningún mensaje, y fácil de reintroducir sin darse cuenta): dos patrones
+del estilo `[ -z "$X" ] && X="$default"` / una asignación desde una tubería
+que termina en `grep` sin coincidencias, con `set -euo pipefail` activo,
+pueden matar el script entero sin imprimir nada, porque (a) el **último**
+comando de una función que termina en una lista `cond && acción` devuelve el
+código de `cond` cuando la acción no se ejecuta, y una llamada a esa función
+sin comprobar su código de salida hereda ese fallo bajo `set -e`; y (b) una
+asignación `var="$(tubería)"` donde la tubería termina en un `grep` sin
+coincidencias falla completa bajo `pipefail`, aunque "no encontrar la clave"
+sea un resultado perfectamente válido para el llamador. Ambos se dieron en
+`lib/cloud.sh` (`cloud_leer_argumentos` y `valor_tfvars`) y se detectaron
+sólo porque las pruebas de rechazo de arriba, en su primera versión, fallaban
+con código de salida 1 y **ningún mensaje**. Corregidos con un `return 0`
+explícito al final de `cloud_leer_argumentos` y neutralizando el código de
+salida de `grep` dentro de `valor_tfvars` (`{ grep ... || true; } | tail -1 |
+sed ...`). Vale la pena que quien retome este archivo revise si el mismo
+patrón aparece en código futuro que lea `.tfvars`.
+
+### No verificado
+
+Todo lo de esta tabla requeriría una cuenta de DigitalOcean real y un
+presupuesto de pruebas acotado (unos pocos dólares y una Droplet destruida
+al terminar bastarían). Nada de esto se intentó, ni parcialmente, en esta
+sesión.
+
+| Prueba | Motivo | Alternativa propuesta |
+|---|---|---|
+| `terraform plan`/`apply`/`destroy` reales contra la API de DigitalOcean | Prohibido explícitamente para esta sesión: crea infraestructura real y factura a quien tenga las credenciales | Con una cuenta de pruebas y presupuesto acotado: `terraform plan` primero (revisar el diff con calma), luego `seclab cloud up`, confirmando que la Droplet resultante tiene exactamente las etiquetas `owner`/`curso`/`fecha-expiracion` esperadas en el panel de DigitalOcean |
+| El cloud-init ejecutándose de verdad en una Droplet Ubuntu 22.04 (instalación de Docker, arranque del servicio `seclab`, `docker pull` real desde `SECLAB_REGISTRY`) | Depende de la Droplet real de arriba | Tras el `apply`: `seclab cloud wait`, y si falla, el propio comando de diagnóstico que imprime (`ssh ... 'cloud-init status; journalctl -u seclab'`) |
+| `seclab cloud wait` esperando de verdad por SSH hasta la marca `bootstrap-completo` | Depende de una Droplet real | Igual que arriba; además probar el caso de timeout agotado de verdad (`--timeout` bajo) contra una Droplet que tarda |
+| `seclab cloud connect` y el túnel SSH `-L` a los servicios web de la Droplet | Depende de una Droplet real | Tras `wait`, comprobar que `seclab cloud connect` abre sesión y que el túnel a `127.0.0.1:8080` sirve la página de bienvenida |
+| `seclab cloud status` leyendo un backend remoto real (Terraform Cloud o S3+DynamoDB/`use_lockfile`) | No hay backend remoto configurado (a propósito: no se configuró ninguno con credenciales reales) | Configurar un workspace de Terraform Cloud gratuito o un bucket S3 de pruebas, aplicar con backend remoto, y confirmar que `status` lee las salidas y que, sin las credenciales del backend, falla con el mensaje documentado de limitación |
+| `seclab cloud destroy`, incluida la exportación previa del workspace remoto por SSH | Depende de una Droplet real con datos en `/workspace` | Con una Droplet de pruebas: crear un archivo de prueba en `/workspace` dentro del contenedor, ejecutar `destroy`, aceptar la exportación, y confirmar que el `.tar.gz` resultante contiene ese archivo antes de que la Droplet desaparezca |
+| El mecanismo opt-in de autodestrucción (`habilitar_autodestruccion=true`, el `at` llamando a `DELETE /v2/droplets/{id}`) | Requiere una Droplet real y un token de borrado dedicado; además es el camino que menos se ha probado a propósito, por ser el de mayor riesgo | Con una Droplet de pruebas y un token de API con alcance reducido (sólo borrado, revisar en el panel de DigitalOcean qué granularidad de alcance ofrece realmente en el momento de probarlo — no asumir que existe la misma granularidad que había al escribir esto): fijar `fecha_expiracion` a un par de minutos en el futuro y confirmar que la Droplet desaparece sola |
+| Firewall de DigitalOcean (`digitalocean_firewall`) aplicado de verdad: que sólo SSH responda desde fuera y que los puertos web no sean alcanzables sin túnel | Depende de una Droplet real | Con una Droplet de pruebas: `nmap`/`curl` contra la IP pública en los puertos 8080/6080/8443/8888 (deben fallar) y 2222/22 (debe responder SSH) |
+| Coste real de una Droplet `s-2vcpu-4gb` (u otro tamaño) comparado con la tabla estática de `docs/cloud.md` | La tabla es la lista de precios pública al escribir esto, no una consulta en vivo | Revisar la factura real de una Droplet de pruebas contra la tabla, y actualizar la tabla si diverge |
+| Comportamiento cuando `DIGITALOCEAN_TOKEN` o el `do_token` del `.tfvars` son inválidos (no ausentes: presentes pero rechazados por la API) | Requeriría un token real (aunque sea inválido/revocado) para observar el mensaje exacto de error de Terraform/el provider | Con un token revocado de una cuenta de pruebas: ejecutar `seclab cloud plan` y confirmar que el mensaje de error del provider llega con claridad hasta el alumno |
+| Windows/WSL2 y Linux nativo para cualquier parte de esta fase | Sólo macOS arm64, igual que el resto del proyecto | Sigue siendo la misma brecha de plataforma que arrastran las fases anteriores. Nada en `lib/cloud.sh` es específico de macOS a propósito (mismo cuidado que el resto del CLI), pero no se ha ejecutado en las otras dos plataformas |
+
+---
+
+## Fase 11 — GCP y Oracle Cloud
+
+**Misma regla de seguridad no negociable que la Fase 10, sin excepción**:
+nunca se ejecutó `terraform apply`, `plan` ni `destroy` de verdad contra GCP
+ni Oracle Cloud; nunca se buscaron ni usaron credenciales reales de esta
+máquina (se confirmó explícitamente que no hay Application Default
+Credentials de GCP en `~/.config/gcloud/` ni en variables de entorno antes de
+probar el camino de rechazo de credenciales; para Oracle Cloud, el CLI `oci`
+SÍ está instalado en esta máquina, así que **directamente no se comprobó, ni
+se probó el camino de rechazo de credenciales de** `exigir_credenciales_oracle`
+— sólo se probaron los rechazos de owner/TTL, que ocurren antes en el flujo y
+nunca llegan a esa función); y no se generó ni se usó ningún token, clave o
+credencial real de ningún proveedor. Dicho sin adornos: **casi todo lo
+entregado en esta fase es sintaxis validada y diseño revisado por lectura,
+no ejecución real contra la API de GCP ni de Oracle Cloud.** No se creó, ni
+se intentó crear, ningún recurso cloud real en ningún momento de esta
+sesión. Tampoco se tocó `seclab-lab-1` (el contenedor de desarrollo real):
+se confirmó su ID (`18231aa50edf`) y su estado (`healthy`) antes y después
+del trabajo de esta fase.
+
+### Verificado
+
+| Prueba | Resultado |
+|---|---|
+| `terraform fmt -check -diff` sobre `terraform/gcp/` y `terraform/oracle/` | Sin diferencias |
+| `terraform init -backend=false` + `terraform validate` sobre ambos módulos | Válidos. Único modo de `init` ejecutado: nunca con el backend real, nunca con credenciales de proveedor. Esto confirmó de paso que atributos poco habituales referenciados (`oci_core_instance.public_ip`, `oci_core_instance.time_created`, la sintaxis `dynamic "service_account"`/`dynamic "shape_config"`) existen de verdad en los providers `hashicorp/google ~> 5.0` (resolvió `5.45.2`) y `oracle/oci >= 5.0.0` (resolvió `9.0.0`) |
+| Render real de ambas plantillas de cloud-init con `terraform console` (valores ficticios, sin recursos, con un backend `"local"` temporal en una copia del módulo bajo `/tmp` — nunca en el checkout real) | Ambas plantillas renderizan sin error, en `habilitar_autodestruccion = true` y `= false` |
+| El cloud-init renderizado (GCP y Oracle, ambas ramas) es YAML válido (`yaml.safe_load`, Python) | Correcto en las cuatro combinaciones |
+| `bash -n` y ShellCheck (`--severity=error`) de cada bloque `runcmd` no trivial de ambas plantillas renderizadas | Sin avisos |
+| `bash -n` y ShellCheck (`--severity=error`) de `lib/cloud.sh` completo tras la generalización | Sin errores |
+| Rechazo de `seclab cloud plan` sin `--provider` | Correcto (mensaje ahora lista `digitalocean gcp oracle`) |
+| Rechazo con `--provider` desconocido (`aws`) | Correcto |
+| Rechazo de `--provider gcp` sin `terraform.tfvars` | Correcto, indica copiar el `.example` de `terraform/gcp/` |
+| Rechazo de `--provider oracle` sin `terraform.tfvars` | Correcto, indica copiar el `.example` de `terraform/oracle/` |
+| Rechazo de `--provider gcp` con `owner` ausente, con `owner = "tu-nombre-aqui"`, y con `fecha_expiracion` ausente (tres casos, `.tfvars` de prueba en `/tmp`) | Correcto en los tres |
+| Rechazo de `--provider oracle` con `owner` ausente y con `fecha_expiracion` ausente (dos casos) | Correcto en los dos |
+| Rechazo de `--provider gcp` sin credenciales (`GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CREDENTIALS` sin definir, sin `~/.config/gcloud/application_default_credentials.json`, `.tfvars` con owner/TTL correctos) | Correcto, y confirmado que ocurre **antes** de invocar a Terraform (ningún proceso `terraform` se lanzó en esta prueba). Se comprobó primero, por separado, que ninguna de esas fuentes existe en esta máquina, precisamente para poder probar este camino con seguridad |
+| `.gitignore`: `terraform/gcp/terraform.tfvars` y `terraform/oracle/terraform.tfvars` ignorados; los `.example`, `backend.hcl.example` y `.terraform.lock.hcl` de ambos, versionados | Confirmado con `git check-ignore -q` |
+| `git add -n terraform/` sólo añade los archivos de código/documentación esperados de los tres proveedores (nunca `.tfvars` ni `.terraform/`) | Correcto |
+| `make lint` completo (bloque de Terraform ahora recorre los tres módulos) | Sin fallos |
+| `./scripts/verificar-seguridad.sh` sobre el checkout real tras los cambios | Sin fallos ni avisos nuevos |
+| `seclab-lab-1` (contenedor real de desarrollo): ID y estado `healthy` antes y después de todas las pruebas de esta fase | Sin cambios; nunca se ejecutó `docker` contra él desde esta fase |
+
+### No verificado
+
+Todo lo de esta tabla requeriría una cuenta real de GCP y/o de Oracle Cloud
+(con un presupuesto de pruebas acotado) o, en el caso marcado aparte, tocar
+credenciales de una herramienta ya instalada en esta máquina que esta sesión
+tenía prohibido tocar. Nada de esto se intentó, ni parcialmente.
+
+| Prueba | Motivo | Alternativa propuesta |
+|---|---|---|
+| `terraform plan`/`apply`/`destroy` reales contra la API de GCP o de Oracle Cloud | Prohibido explícitamente para esta sesión: crea infraestructura real y factura a quien tenga las credenciales | Con una cuenta de pruebas y presupuesto acotado, igual que se documentó para DigitalOcean en la Fase 10: `plan` primero, revisar el diff, luego `up`, confirmando labels/freeform_tags exactas en la consola del proveedor |
+| El cloud-init ejecutándose de verdad en una instancia GCP (`ubuntu-os-cloud/ubuntu-2204-lts`) u OCI (imagen Ubuntu 22.04 resuelta por `image_ocid`) | Depende de una instancia real | Tras el `apply`: `seclab cloud wait --provider gcp\|oracle`, y si falla, el comando de diagnóstico que imprime (`ssh ... 'cloud-init status; journalctl -u seclab'`) |
+| `seclab cloud wait`/`connect` de verdad contra una instancia GCP u Oracle Cloud, incluido confirmar que el usuario SSH resuelto (`seclab`/`ubuntu`, no `root`) es correcto | Depende de una instancia real | Igual que en la Fase 10, más comprobar explícitamente que `ssh <usuario>@IP` funciona con ese usuario y que `root@IP` es rechazado (las imágenes Ubuntu de ambos proveedores deshabilitan login directo de root) |
+| El mecanismo de autodestrucción opt-in en GCP (identidad de cuenta de servicio + scope `compute` + rol IAM externo) | Requiere un proyecto GCP real con una cuenta de servicio a la que conceder el rol de borrado — configuración de IAM fuera de este módulo a propósito | Con un proyecto de pruebas: conceder `roles/compute.instanceAdmin.v1` (o un rol acotado sólo a `compute.instances.delete`) a la cuenta de servicio de la instancia, fijar `fecha_expiracion` a un par de minutos en el futuro con `habilitar_autodestruccion = true`, y confirmar que la instancia desaparece sola |
+| El mecanismo de autodestrucción opt-in en Oracle Cloud (`oci-cli` + instance principal + Dynamic Group/Policy) | Requiere una tenancy con permisos de administrador para crear el Dynamic Group y la Policy — fuera del alcance de una cuenta de estudiante típica, y desde luego fuera del alcance de esta sesión | Con una tenancy de pruebas donde se tenga ese privilegio: crear el Dynamic Group (`instance.compartment.id = '<compartment>'`), la Policy (`allow dynamic-group <grupo> to manage instance-family in compartment <compartment>` o un permiso más acotado), y repetir la prueba de arriba |
+| Firewall de GCP (`google_compute_firewall`) y lista de seguridad de Oracle Cloud (`oci_core_security_list`) aplicados de verdad: que sólo SSH responda desde fuera | Depende de una instancia real | Con una instancia de pruebas de cada proveedor: `nmap`/`curl` contra la IP pública en los puertos 8080/6080/8443/8888 (deben fallar) y el puerto SSH configurado (debe responder) |
+| Coste real de `e2-medium` (GCP) y de una forma Ampere A1.Flex u otra (Oracle Cloud) comparado con las tablas estáticas de `docs/cloud.md`/`lib/cloud.sh` | Las tablas son precios públicos al escribir esto, no una consulta en vivo | Revisar la factura real de una instancia de pruebas de cada proveedor contra la tabla correspondiente, y actualizarla si diverge |
+| Límites vigentes del "Always Free tier" de Oracle Cloud (formas, cantidad, región) | Los límites los fija y cambia Oracle; no se consultó ninguna API en vivo, sólo documentación pública general | Comprobar la página oficial de Oracle Cloud Free Tier en el momento de desplegar, antes de asumir gasto cero |
+| Rechazo de `seclab cloud plan/up --provider oracle` por falta de credenciales (`exigir_credenciales_oracle`) | El CLI `oci` está instalado en esta máquina de desarrollo; esta sesión tenía prohibido buscar, leer o siquiera comprobar la existencia de `~/.oci/config` o de credenciales activas configuradas, así que este camino de rechazo deliberadamente no se ejercitó aquí (a diferencia del equivalente de GCP, donde sí se confirmó primero que no había ninguna fuente de credenciales antes de probarlo) | En una máquina sin `~/.oci/config` ni variables `OCI_CLI_*`/`TF_VAR_*` de Oracle: repetir la prueba equivalente a la de GCP y confirmar el mismo resultado (rechazo antes de invocar Terraform) |
+| Backend remoto real de GCP (`"gcs"`) y de Oracle Cloud (`"s3"` vía Object Storage) | No se configuró ningún backend con credenciales reales (a propósito) | Configurar un bucket de GCS de pruebas (backend `gcs`, confirmar que el locking nativo efectivamente bloquea un segundo `apply` concurrente) y un bucket de Object Storage de OCI vía su API S3-compatible (confirmar la ausencia de locking, igual que con Spaces en la Fase 10) |
+| Windows/WSL2 y Linux nativo para cualquier parte de esta fase | Sólo macOS arm64, igual que el resto del proyecto | Misma brecha de plataforma que arrastran todas las fases anteriores |
+
+---
+
 ## Fases pendientes
 
-Fases 9 a 13: sin ejecutar. Ver [CHANGELOG.md](CHANGELOG.md) para el estado de
+Fases 12 y 13: sin ejecutar. Ver [CHANGELOG.md](CHANGELOG.md) para el estado de
 lo entregado.

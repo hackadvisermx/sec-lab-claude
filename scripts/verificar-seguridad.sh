@@ -44,7 +44,7 @@ if [ ! -f .gitignore ]; then
     falla "No existe .gitignore." "Créalo antes de inicializar el repositorio."
 else
     faltan=""
-    for patron in '.env' '*.pem' '*.key' '*.ovpn' '/vpn/' '/workspace/' '/terraform/*.tfvars'; do
+    for patron in '.env' '*.pem' '*.key' '*.ovpn' '/vpn/' '/workspace/' '/terraform/**/*.tfvars'; do
         if ! grep -qxF "$patron" .gitignore; then
             faltan="${faltan} ${patron}"
         fi
@@ -226,6 +226,28 @@ else
     else
         falla "La configuración de Compose expone la máquina más de lo necesario:"
         printf '%s\n' "$salida" >&2
+    fi
+fi
+
+# docker-compose.tailscale.yml (Fase 9, opcional) se analiza APARTE, nunca
+# combinado con los archivos de arriba: por diseño vive en su propio proyecto
+# de Compose (${SECLAB_PROJECT}-tailscale), independiente del de 'lab' — ver
+# docs/tailscale.md. Combinarlo aquí sería analizar una composición que el
+# CLI nunca aplica junta de verdad.
+if [ -f "${RAIZ}/docker-compose.tailscale.yml" ]; then
+    if ! existe_comando docker; then
+        : # ya avisado arriba
+    elif ! ( cd "$RAIZ" && docker compose -f docker-compose.tailscale.yml config --quiet ) 2>/dev/null; then
+        falla "La configuración de docker-compose.tailscale.yml no es válida." \
+              "Revisa el error con: docker compose -f docker-compose.tailscale.yml config"
+    else
+        pasa "docker-compose.tailscale.yml es válido (proyecto propio, no combinado con 'lab')"
+        if salida_ts="$( ( cd "$RAIZ" && docker compose -f docker-compose.tailscale.yml config --format json ) 2>/dev/null | python3 "${RAIZ}/scripts/analizar-compose.py")"; then
+            pasa "Tailscale sin puertos expuestos, privilegios elevados ni nombre de contenedor fijo"
+        else
+            falla "docker-compose.tailscale.yml expone la máquina más de lo necesario:"
+            printf '%s\n' "$salida_ts" >&2
+        fi
     fi
 fi
 

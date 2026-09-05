@@ -1,0 +1,28 @@
+# =============================================================================
+# SecLab — ejemplo de terraform.tfvars (DigitalOcean)
+# =============================================================================
+# Copia a terraform.tfvars (ya está en .gitignore: /terraform/**/*.tfvars) y
+# sustituye TODOS los valores. Los de abajo son evidentemente ficticios a
+# propósito: no son un token válido ni una llave real.
+#
+# El token también puede pasarse por variable de entorno DIGITALOCEAN_TOKEN
+# en vez de aquí; es preferible, porque un .tfvars puede acabar copiado o
+# adjuntado a un correo por error con más facilidad que una variable de shell.
+# =============================================================================
+
+do_token         = "REEMPLAZA_CON_TU_TOKEN_DE_DIGITALOCEAN"
+owner            = "tu-nombre-aqui"
+curso            = "ciberseguridad-2026"
+fecha_expiracion = "2026-12-31"
+
+region = "nyc3"
+size   = "s-2vcpu-4gb"
+
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAREEMPLAZA-CON-TU-LLAVE-PUBLICA tu-llave@tu-maquina"
+
+seclab_registry   = "registry.example.invalid/seclab"
+seclab_imagen_ref = "registry.example.invalid/seclab/seclab-lite@sha256:REEMPLAZA0000000000000000000000000000000000000000000000000000"
+
+# Desactivada por defecto: ver docs/cloud.md, "TTL y autodestrucción".
+habilitar_autodestruccion = false
+# do_token_autodestruccion = "REEMPLAZA_SOLO_SI_ACTIVAS_LA_AUTODESTRUCCION"

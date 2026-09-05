@@ -1,0 +1,15 @@
+# =============================================================================
+# SecLab — configuración parcial de backend (ejemplo, NO usar tal cual)
+# =============================================================================
+# Copia este archivo fuera de Git y rellénalo con tus valores reales. Se pasa
+# a `terraform init -backend-config=/ruta/a/tu/backend.hcl`.
+#
+# Por qué GCS aquí es más simple que DigitalOcean Spaces: el backend "gcs" de
+# Terraform tiene locking NATIVO (usa precondiciones de generación de objeto
+# de Google Cloud Storage), sin tabla de locking adicional ni servicio
+# externo. Basta un bucket de GCS con versionado activado (recomendado, no
+# obligatorio) y las credenciales que ya usa el provider "google"
+# (Application Default Credentials).
+#
+# bucket = "tu-bucket-de-estado"
+# prefix = "seclab/gcp"

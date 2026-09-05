@@ -1,0 +1,25 @@
+# =============================================================================
+# SecLab — configuración parcial de backend (ejemplo, NO usar tal cual)
+# =============================================================================
+# Copia este archivo fuera de Git y rellénalo con tus valores reales. Se pasa
+# a `terraform init -backend-config=/ruta/a/tu/backend.hcl`.
+#
+# Oracle Cloud Object Storage expone una API de compatibilidad S3, igual que
+# DigitalOcean Spaces, y con la MISMA limitación real: no hay servicio de
+# locking nativo equivalente a DynamoDB en OCI. Mismas dos alternativas que
+# en DigitalOcean (ver terraform/digitalocean/backend.hcl.example):
+#
+#   1. RECOMENDADA para este curso: Terraform Cloud (HCP Terraform).
+#   2. AWS S3 real + DynamoDB (o `use_lockfile = true` en Terraform >= 1.10),
+#      si prefieres mantener el estado fuera de OCI. Si usas el propio
+#      Object Storage de OCI para el .tfstate, tendrás que aportar el
+#      locking desde otro sitio (mismo razonamiento que con Spaces).
+#
+# endpoint                    = "https://<namespace>.compat.objectstorage.<region>.oraclecloud.com"
+# bucket                      = "tu-bucket-de-estado"
+# key                         = "seclab/oracle/terraform.tfstate"
+# region                      = "us-ashburn-1"
+# skip_region_validation      = true
+# skip_credentials_validation = true
+# skip_metadata_api_check     = true
+# encrypt                     = true

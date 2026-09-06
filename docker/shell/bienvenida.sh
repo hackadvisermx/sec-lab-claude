@@ -27,6 +27,7 @@ ARQ="$(dpkg --print-architecture 2>/dev/null || uname -m)"
 P_SSH="${SECLAB_PUERTO_SSH:-2222}"
 P_NOVNC="${SECLAB_PUERTO_NOVNC:-6080}"
 P_CODE="${SECLAB_PUERTO_CODE:-8443}"
+P_TERMINAL="${SECLAB_PUERTO_TERMINAL:-7681}"
 
 herramientas=0
 if [ -r /opt/seclab/manifiesto-herramientas.txt ]; then
@@ -106,6 +107,10 @@ fi
 if [ "${SECLAB_HABILITAR_JUPYTER:-false}" = "true" ]; then
     servicio "Jupyter" "http://127.0.0.1:${SECLAB_PUERTO_JUPYTER:-8888}/" \
              "Cuadernos sobre /workspace."
+fi
+if [ "${SECLAB_HABILITAR_TERMINAL:-false}" = "true" ]; then
+    servicio "Terminal (ttyd)" "http://127.0.0.1:${P_TERMINAL}/" \
+             "El mismo zsh que da SSH, por navegador. Pide usuario y contraseña del terminal."
 fi
 
 printf '  </div>\n'

@@ -119,14 +119,43 @@ detiene si no coincide.
 |---|---|---|
 | Oh My Zsh y sus dos plugins | `lite` | No están empaquetados; se fijan por commit |
 | Oh my tmux! | `lite` | Igual: configuración, no paquete |
-| code-server | `desktop` | No está en el repositorio de Ubuntu |
-| Firefox ESR | `desktop` | Los paquetes `firefox` y `chromium-browser` de Ubuntu son transiciones a **snap**, y snapd no funciona dentro de un contenedor: instalarlos deja un navegador que no arranca |
-| JetBrainsMono Nerd Font | `desktop` | Las fuentes con glifos Powerline no están en el repositorio |
+| code-server | `lite` | No está en el repositorio de Ubuntu |
+| ttyd | `lite` | No está en el repositorio de Ubuntu: binario oficial estático |
+| Firefox ESR | `lite` | Los paquetes `firefox` y `chromium-browser` de Ubuntu son transiciones a **snap**, y snapd no funciona dentro de un contenedor: instalarlos deja un navegador que no arranca |
+| JetBrainsMono Nerd Font | `lite` | Las fuentes con glifos Powerline no están en el repositorio |
 | nikto | `full` | Ubuntu trae la 2.1.5; la actual es la 2.6.1 |
 | linPEAS y winPEAS | `full` | No están empaquetados en ninguna distribución |
 | pspy | `full` | No empaquetado. **Sólo x86**: en arm64 no se instala y el manifiesto lo dice |
 | SecLists (subconjunto) | `full` | No está en Ubuntu, y del repositorio completo (1,5 GB) se usan siempre las mismas cinco listas |
+| subfinder, nuclei, httpx-toolkit | `full` | Trío de ProjectDiscovery: publicación propia con varias versiones al año. Se instala como `httpx-toolkit`, no `httpx`, porque el cliente HTTP de Python del mismo nombre (dependencia transitiva de `netexec` y `pwncat-cs`) instala un script llamado `httpx` en la misma ruta y sobrescribiría el binario de Go sin avisar — mismo nombre que usa Kali para el mismo binario, por el mismo motivo |
+| feroxbuster, rustscan | `full` | Binarios de Go de publicación propia, no empaquetados en Ubuntu |
+| chisel, ligolo-ng (proxy) | `full` | Binarios de Go de publicación propia, para pivoting |
+| enum4linux-ng | `full` | No empaquetado en Ubuntu |
+| pwndbg | `full` | Plugin de gdb, no un paquete; se fija por commit igual que Oh My Zsh |
+| netexec | `full` | Paquete de PyPI, no está en Ubuntu |
+| OWASP ZAP | `full` | No empaquetado en Ubuntu; sustituye a Burp Suite Community como proxy web (ver más abajo por qué) |
+| pwncat-cs | `full` | Paquete de PyPI, versión fijada |
+| one_gadget | `full` | Gem de RubyGems, versión fijada |
 | Metasploit | `full-msf` | No está en Ubuntu. Su instalador oficial es un script remoto que se ejecuta a ciegas, cosa que esta imagen no hace: se usa el `.deb` de Rapid7 con el checksum que publica su propio índice de paquetes |
+
+`eza` y `bat` (reemplazos modernos de `ls` y `cat`) sí vienen de apt, en
+`lite`: Ubuntu los mantiene al día y no hay motivo para traerlos por la otra
+vía.
+
+### Dos candidatas descartadas
+
+No toda herramienta evaluada entra en `full`. Dos quedaron fuera, con motivo
+documentado en vez de simplemente omitidas:
+
+- **exploitdb/searchsploit**: su repositorio oficial
+  (`offensive-security/exploitdb` en GitHub) está archivado desde el
+  10-11-2022. Una base de datos de exploits que ya no puede recibir
+  actualizaciones no cumple su propósito: quedaría congelada en lo que había
+  ese día, contradiciendo el motivo mismo de tenerla.
+- **Burp Suite Community**: PortSwigger no publica un checksum oficial de su
+  descarga, así que no cumple la condición innegociable de verificar antes de
+  instalar. OWASP ZAP sí publica checksum verificable y cubre el mismo caso de
+  uso de proxy web, así que se instaló en su lugar.
 
 El manifiesto de herramientas tiene una columna `vía` que distingue las dos
 rutas, para que dentro del laboratorio se pueda ver de un vistazo de dónde

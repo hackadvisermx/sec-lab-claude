@@ -24,6 +24,16 @@ packages:
   - curl
   - gnupg
   - at
+  %{~ if habilitar_escritorio_host ~}
+  # Escritorio del HOST (opt-in, habilitar_escritorio_host): xfce4 mínimo,
+  # sin el metapaquete completo (trae LibreOffice y otro peso muerto que
+  # nadie usa por RDP); xrdp da el protocolo, dbus-x11 lo necesita xfce4 para
+  # la sesión de escritorio.
+  - xfce4
+  - xfce4-goodies
+  - xrdp
+  - dbus-x11
+  %{~ endif ~}
 
 write_files:
   - path: /etc/seclab-cloud/entorno
@@ -36,6 +46,14 @@ write_files:
       SECLAB_PROPOSITO=${proposito}
       SECLAB_FECHA_EXPIRACION=${fecha_expiracion}
       SECLAB_PUERTO_SSH=${puerto_ssh}
+      SECLAB_SSH_PUBKEY=${ssh_public_key}
+      # Los perfiles full/full-msf traen escritorio y code-server activados
+      # por defecto (ver docker/entrypoint.sh, por_perfil()), y ambos EXIGEN
+      # un secreto no vacío o el contenedor aborta — igual que 'seclab init'
+      # los genera en local, aquí los genera Terraform (random_password.vnc/
+      # code en main.tf), únicos por despliegue.
+      SECLAB_VNC_PASSWORD=${vnc_password}
+      SECLAB_CODE_PASSWORD=${code_password}
 
   - path: /etc/systemd/system/seclab.service
     permissions: '0644'
@@ -52,11 +70,12 @@ write_files:
       ExecStartPre=-/usr/bin/docker rm -f ${nombre_contenedor}
       ExecStartPre=/usr/bin/docker pull $${SECLAB_IMAGEN_REF}
       ExecStart=/usr/bin/docker run --rm --name $${SECLAB_NOMBRE_CONTENEDOR} \
+        --env-file /etc/seclab-cloud/entorno \
         -p 127.0.0.1:8080:8080 \
         -p 127.0.0.1:6080:6080 \
         -p 127.0.0.1:8443:8443 \
         -p 127.0.0.1:8888:8888 \
-        %{~ if habilitar_tailscale ~}
+        %{~ if privado_final ~}
         -p 127.0.0.1:$${SECLAB_PUERTO_SSH}:22 \
         %{~ else ~}
         -p $${SECLAB_PUERTO_SSH}:22 \
@@ -115,7 +134,15 @@ write_files:
         --env-file /etc/seclab-cloud/tailscale.env \
         -v tailscale-state:/var/lib/tailscale \
         tailscale/tailscale:v1.102.3@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
-      ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do docker exec seclab-tailscale tailscale status >/dev/null 2>&1 && break; sleep 2; done; docker exec seclab-tailscale tailscale serve --bg --tcp ${puerto_ssh} tcp://127.0.0.1:${puerto_ssh} || true'
+      # A petición explícita del dueño del proyecto: dentro de la tailnet no
+      # hace falta redirigir puertos por SSH (-L) para llegar al escritorio/
+      # code-server/Jupyter — 'tailscale serve --tcp' publica cada puerto
+      # DIRECTO en la interfaz de Tailscale (alcanzable como
+      # tailscale_hostname:puerto desde cualquier dispositivo de tu tailnet),
+      # sin tocar la IP pública ni la lista de seguridad para nada: sigue
+      # siendo tráfico sólo dentro de tu red privada de Tailscale, la propia
+      # tailnet ya es el control de acceso.
+      ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do docker exec seclab-tailscale tailscale status >/dev/null 2>&1 && break; sleep 2; done; for puerto in ${puerto_ssh} 8080 6080 8443 8888%{ if habilitar_escritorio_host } 3389%{ endif }; do docker exec seclab-tailscale tailscale serve --bg --tcp "$puerto" "tcp://127.0.0.1:$puerto" || true; done'
       ExecStop=/usr/bin/docker stop -t 15 seclab-tailscale
       Restart=on-failure
       RestartSec=5s
@@ -157,6 +184,22 @@ runcmd:
   - docker volume inspect seclab-workspace >/dev/null 2>&1 || docker volume create seclab-workspace
   %{~ if habilitar_tailscale ~}
   - docker volume inspect tailscale-state >/dev/null 2>&1 || docker volume create tailscale-state
+  %{~ endif ~}
+
+  # --- Escritorio del HOST (opt-in, habilitar_escritorio_host) ---
+  # RDP no tiene equivalente a una llave SSH: exige una contraseña real de
+  # sistema (PAM), generada por Terraform (random_password.rdp_host), nunca
+  # un valor por defecto. `.xsession` es lo que hace que xrdp arranque XFCE
+  # en vez de una sesión gris vacía — el fallo más común de esta combinación
+  # en Ubuntu. `adduser xrdp ssl-cert` es necesario para que xrdp pueda leer
+  # el certificado autofirmado que genera al instalarse.
+  %{~ if habilitar_escritorio_host ~}
+  - |
+    echo 'ubuntu:${rdp_password}' | chpasswd
+    echo 'startxfce4' > /home/ubuntu/.xsession
+    chown ubuntu:ubuntu /home/ubuntu/.xsession
+    adduser xrdp ssl-cert
+    systemctl enable --now xrdp
   %{~ endif ~}
 
   # --- Autodestrucción opcional por TTL (desactivada salvo opt-in expreso) ---

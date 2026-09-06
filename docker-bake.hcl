@@ -56,17 +56,6 @@ target "lite-multiarch" {
   platforms = ["linux/amd64", "linux/arm64"]
 }
 
-target "desktop" {
-  inherits = ["_comun"]
-  target   = "desktop"
-  tags     = etiquetas("desktop")
-}
-
-target "desktop-multiarch" {
-  inherits  = ["desktop"]
-  platforms = ["linux/amd64", "linux/arm64"]
-}
-
 target "full" {
   inherits = ["_comun"]
   target   = "full"
@@ -96,5 +85,5 @@ group "default" {
 
 // Los perfiles que se publican en cada versión. `full-msf` va aparte.
 group "todos" {
-  targets = ["lite", "desktop", "full"]
+  targets = ["lite", "full"]
 }

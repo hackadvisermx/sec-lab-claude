@@ -7,20 +7,11 @@
 # llamar a Compose sería una segunda verdad, y acabarían discrepando.
 # =============================================================================
 
-# perfil_con_escritorio PERFIL -> 0 si ese perfil trae escritorio y servicios web
-perfil_con_escritorio() {
-    case "$1" in
-        desktop|full|full-msf) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 # compose_seclab ARGS...
 #
-# El override del escritorio se añade sólo cuando el perfil lo trae. Va aquí, en
-# la única envoltura de Compose, y no en cada comando: si `start` publicara los
-# puertos y `status` mirase otra composición, los dos tendrían razón por
-# separado y ninguno diría la verdad.
+# Los tres perfiles (lite, full, full-msf) traen escritorio, code-server,
+# terminal web y página de bienvenida: sus puertos van en el propio
+# docker-compose.yml, sin overrides condicionales por perfil.
 #
 # El override de VPN (docker-compose.vpn.yml, Fase 7) se añade sólo cuando
 # SECLAB_HABILITAR_VPN=true en .env. No toca la red de 'lab' ni sus puertos:
@@ -34,11 +25,6 @@ compose_seclab() {
     local archivos=(-f "${SECLAB_RAIZ}/docker-compose.yml")
     [ -f "${SECLAB_RAIZ}/docker-compose.override.yml" ] && \
         archivos+=(-f "${SECLAB_RAIZ}/docker-compose.override.yml")
-
-    if perfil_con_escritorio "$(perfil_actual)" && \
-       [ -f "${SECLAB_RAIZ}/docker-compose.desktop.yml" ]; then
-        archivos+=(-f "${SECLAB_RAIZ}/docker-compose.desktop.yml")
-    fi
 
     if [ "$(leer_variable "${SECLAB_RAIZ}/.env" SECLAB_HABILITAR_VPN)" = "true" ] && \
        [ -f "${SECLAB_RAIZ}/docker-compose.vpn.yml" ]; then

@@ -114,6 +114,13 @@ if servicio_activo jupyter; then
         problemas+=("Jupyter no responde en el 8888")
 fi
 
+if servicio_activo terminal; then
+    # Sin credenciales, ttyd responde 401: esa es la respuesta correcta de un
+    # servicio sano y protegido, igual que el 302 de code-server.
+    endpoint_responde 7681 "/" "200 401" || \
+        problemas+=("el terminal web (ttyd) no responde en el 7681")
+fi
+
 if [ ${#problemas[@]} -gt 0 ]; then
     printf 'NO SANO: %s\n' "$(IFS='; '; echo "${problemas[*]}")"
     exit 1

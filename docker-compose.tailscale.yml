@@ -88,6 +88,22 @@ services:
       # gestiona Docker.
       TS_EXTRA_ARGS: --accept-routes=false --accept-dns=false
 
+      # A petición explícita del dueño del proyecto: dentro de la tailnet no
+      # hace falta redirigir puertos por SSH (-L) para llegar al escritorio/
+      # code-server/Jupyter/bienvenida — el `command` de más abajo llama a
+      # `tailscale serve --bg --tcp <puerto>` por cada uno de estos, apenas
+      # arranca el nodo, publicándolos DIRECTO en la interfaz de Tailscale
+      # (alcanzables como <hostname>:<puerto> desde cualquier dispositivo de
+      # tu tailnet) sin tocar la publicación en 127.0.0.1 de 'lab' para nada:
+      # sigue siendo tráfico sólo dentro de tu red privada de Tailscale, la
+      # propia tailnet ya es el control de acceso.
+      SECLAB_PUERTO_SSH: ${SECLAB_PUERTO_SSH:-2222}
+      SECLAB_PUERTO_WEB: ${SECLAB_PUERTO_WEB:-8080}
+      SECLAB_PUERTO_NOVNC: ${SECLAB_PUERTO_NOVNC:-6080}
+      SECLAB_PUERTO_CODE: ${SECLAB_PUERTO_CODE:-8443}
+      SECLAB_PUERTO_JUPYTER: ${SECLAB_PUERTO_JUPYTER:-8888}
+      SECLAB_PUERTO_TERMINAL: ${SECLAB_PUERTO_TERMINAL:-7681}
+
     volumes:
       # Volumen nombrado dedicado (ver .gitignore: /tailscale-state/ es el
       # patrón para un montaje por bind que este diseño NO usa; el estado real
@@ -101,6 +117,17 @@ services:
     # tailnet (el comportamiento por defecto de la imagen oficial sin
     # TS_AUTHKEY): prompt_v3.md exige explícitamente que el fallo sea
     # temprano y claro, nunca tardío y confuso.
+    #
+    # containerboot ya NO se ejecuta con `exec` (que lo dejaría como PID 1
+    # reemplazando a este script): a petición explícita del dueño del
+    # proyecto, en cuanto el nodo autentica, este mismo script publica
+    # DIRECTO en la tailnet (`tailscale serve --bg --tcp`) el SSH de 'lab' y
+    # sus servicios web (escritorio, code-server, Jupyter, bienvenida) — ya
+    # no hace falta redirigir puertos por SSH (-L) para llegar a ellos desde
+    # otro dispositivo de tu tailnet; ver docs/tailscale.md. El precio real
+    # de no usar `exec`: este script queda como PID 1 en vez de containerboot,
+    # así que se reenvía la señal de apagado a mano (`trap`) para que
+    # `docker compose down`/`seclab tailscale down` sigan parando limpio.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -111,7 +138,19 @@ services:
           echo "[SecLab]   seclab tailscale up" >&2
           exit 1
         fi
-        exec /usr/local/bin/containerboot
+        /usr/local/bin/containerboot &
+        CONTAINERBOOT_PID=$$!
+        trap 'kill -TERM "$$CONTAINERBOOT_PID" 2>/dev/null' TERM INT
+        (
+          for i in $$(seq 1 30); do
+            tailscale status >/dev/null 2>&1 && break
+            sleep 2
+          done
+          for puerto in "$$SECLAB_PUERTO_SSH" "$$SECLAB_PUERTO_WEB" "$$SECLAB_PUERTO_NOVNC" "$$SECLAB_PUERTO_CODE" "$$SECLAB_PUERTO_JUPYTER" "$$SECLAB_PUERTO_TERMINAL"; do
+            [ -n "$$puerto" ] && tailscale serve --bg --tcp "$$puerto" "tcp://host.docker.internal:$$puerto" 2>/dev/null || true
+          done
+        ) &
+        wait "$$CONTAINERBOOT_PID"
 
 volumes:
   tailscale-state:

@@ -13,7 +13,7 @@ SecLab es una herramienta docente para un curso de ciberseguridad en una univers
 - Cada alumno despliega y opera **su propia instancia** de SecLab de forma independiente. No hay multiusuario, ni aislamiento entre alumnos, ni estado compartido: cada instancia pertenece al alumno que la ejecuta.
 - **La ejecución local es la ruta principal y por defecto.** Debe funcionar en máquinas heterogéneas de estudiantes: macOS, Linux y Windows mediante WSL2; arquitecturas Intel (amd64) y ARM (arm64).
 - `seclab init` detecta la plataforma (incluido Windows/WSL2) y **rechaza arrancar con un mensaje claro y amable** si la máquina no cumple los recursos mínimos del perfil elegido, indicando el mínimo requerido y sugiriendo un perfil más ligero.
-- **Distribución de imágenes:** la ruta principal es que el alumno haga `pull` de las imágenes `lite` y `desktop` ya publicadas y firmadas desde el registry del curso, para que todos tengan un entorno idéntico sin builds largos. La construcción local es la ruta de respaldo documentada.
+- **Distribución de imágenes:** la ruta principal es que el alumno haga `pull` de la imagen `lite` (y `full` si la necesita) ya publicada y firmada desde el registry del curso, para que todos tengan un entorno idéntico sin builds largos. La construcción local es la ruta de respaldo documentada. *(Nota posterior: `lite` incluye el escritorio desde la fusión del perfil `desktop`; ver [docs/perfiles.md](docs/perfiles.md).)*
 - **La nube es totalmente opcional.** Un alumno puede completar el curso íntegro sin usarla. Si la usa, el despliegue cloud corre en la cuenta y **a cargo económico del propio alumno**, bajo su exclusiva responsabilidad. SecLab no gestiona ni asume costos institucionales.
 - **La VPN es parte del uso diario, no un extra.** Los alumnos trabajan mayoritariamente contra **TryHackMe** y **Hack The Box** a través de sus VPN, y el profesorado se conecta además a una **VPN de cliente/engagement** distinta. SecLab debe soportar tres perfiles de VPN separados (`vpnhtb`, `vpntry`, `vpncli`), cada uno con su propia configuración, sus rangos autorizados y su propio ciclo de vida. Ver la sección *VPN autorizada (multiperfil)*.
 - Antes de aplicar cualquier despliegue cloud, el CLI debe: mostrar la estimación de costo, exigir confirmación explícita del alumno, **rechazar aplicar si no hay TTL/fecha de expiración definida**, advertir de forma prominente que el costo es personal del alumno, y recordar el comando de destrucción. `seclab cloud status` muestra qué recursos siguen activos y desde cuándo, para que nadie olvide una VM encendida facturando.
@@ -109,11 +109,16 @@ versión de hace años creyendo que está al día.
 
 #### Perfiles
 
+> **Estado real (revisión posterior a esta especificación)**: el perfil
+> `desktop` que describía esta sección se fusionó en `lite` — ya no es un
+> perfil separado. Quedan exactamente tres: `lite`, `full` y `full-msf`. Ver
+> [docs/perfiles.md](docs/perfiles.md) para la tabla vigente.
+
 Implementa targets de BuildKit o Docker Bake claramente separados:
 
-- `lite`: shell, red, recon básico y utilidades comunes.
-- `desktop`: `lite` más XFCE, noVNC y code-server.
-- `full`: `desktop` más Web, AD, privesc, wordlists y herramientas de CTF.
+- `lite`: shell, red, recon básico, utilidades comunes, XFCE, noVNC y
+  code-server.
+- `full`: `lite` más Web, AD, privesc, wordlists y herramientas de CTF.
 - `full-msf`: `full` más Metasploit, siempre opt-in.
 
 Cada imagen debe tener una etiqueta inequívoca y labels con:
@@ -180,7 +185,7 @@ Lo que sí debe hacer SecLab:
 - **Comprobarlo, no suponerlo.** `seclab doctor` imprime una línea de prueba con los glifos y pregunta si se ven correctamente.
 - **Degradar bien.** Si no se ven, ofrecer el cambio a separadores ASCII (`tmux_conf_theme_use_nerd_fonts=false`) sin perder el resto del tema.
 - **Documentar la solución real**: instalar una Nerd Font en el host y seleccionarla en el emulador de terminal, con las instrucciones concretas para macOS, Linux y Windows/WSL2.
-- **En el perfil `desktop` sí se puede garantizar**, porque ahí el contenedor dibuja su propia terminal: incluye una Nerd Font en la imagen y configura la terminal del escritorio para usarla.
+- **En el escritorio sí se puede garantizar**, porque ahí el contenedor dibuja su propia terminal: incluye una Nerd Font en la imagen y configura la terminal del escritorio para usarla. *(Nota posterior: esto ya no es exclusivo de un perfil `desktop` — el escritorio viene en los tres perfiles desde `lite`.)*
 
 ### Runtime local
 
@@ -309,7 +314,7 @@ Proporciona un wrapper `bin/seclab` o una interfaz equivalente con estos comando
 
 ```text
 seclab init
-seclab start --profile desktop
+seclab start --profile full
 seclab stop
 seclab restart
 seclab open
@@ -413,8 +418,11 @@ No metas todo en la imagen base. Implementa paquetes opt-in:
 - `forensics`: Volatility 3, YARA, Sleuth Kit, tshark y esteganografía.
 - `cloud`: kubectl, Helm, Trivy, Syft/Grype y herramientas de auditoría cloud.
 - `mobile`: apktool, JADX y adb.
-- `desktop`: XFCE, navegador, noVNC y code-server.
 - `msf`: Metasploit y sus dependencias, nunca por defecto.
+
+*(Nota posterior: no hay paquete `desktop` — XFCE, noVNC y code-server se
+fusionaron en el perfil `lite` y ya vienen en los tres perfiles; ver
+[docs/perfiles.md](docs/perfiles.md).)*
 
 Cada cheatsheet de paquete se encabeza con un recordatorio breve de **uso autorizado** —una vez, sin repetirlo en cada sección— y usa como ejemplos los targets de laboratorio incluidos (DVWA, Juice Shop, WebGoat y el target de Active Directory), por ser reproducibles para todos los alumnos. Las cheatsheets son material de referencia completo: no recortes el contenido técnico de los paquetes ofensivos (`ad`, `privesc`, `msf`).
 
@@ -541,11 +549,17 @@ Healthcheck real y condicional para servicios opcionales. `seclab backup`, `secl
 - **Glifos de la barra de estado.** Imprime una línea de prueba con los separadores Powerline y pregunta si se ven; si no, ofrece la variante ASCII.
 
 ### Fase 4 — Experiencia de terminal
-zsh como shell por defecto con Oh My Zsh y sus plugins, todo fijado por commit y con checksum verificado. Oh my tmux! fijado igual, con `templates/shell/tmux.conf.local` copiado a la imagen. Entrada automática en tmux con adjuntar-o-crear, desactivable por variable de entorno y sin afectar a ejecuciones no interactivas. Banner de bienvenida generado a partir del estado real, sin secretos. Comando de ayuda de herramientas construido desde el manifiesto, por categorías y con ejemplos sobre los targets de laboratorio. Comprobación de glifos con degradación a ASCII. Nerd Font dentro de la imagen para el perfil `desktop`.
+zsh como shell por defecto con Oh My Zsh y sus plugins, todo fijado por commit y con checksum verificado. Oh my tmux! fijado igual, con `templates/shell/tmux.conf.local` copiado a la imagen. Entrada automática en tmux con adjuntar-o-crear, desactivable por variable de entorno y sin afectar a ejecuciones no interactivas. Banner de bienvenida generado a partir del estado real, sin secretos. Comando de ayuda de herramientas construido desde el manifiesto, por categorías y con ejemplos sobre los targets de laboratorio. Comprobación de glifos con degradación a ASCII. Nerd Font dentro de la imagen para el perfil `desktop`. *(Nota posterior: `desktop` se fusionó en `lite`; la Nerd Font está en los tres perfiles.)*
 
 Verificación: abrir sesión por SSH y por `seclab shell` y comprobar que en ambos casos se entra en tmux, que reconectar recupera la sesión anterior en lugar de crear otra, que el banner no filtra ningún secreto y que la ayuda de herramientas coincide con el manifiesto.
 
 ### Fase 5 — Perfiles `desktop`, `full` y `full-msf`
+
+> **Nota posterior**: el perfil `desktop` de esta fase ya no existe como tal
+> — se fusionó en `lite` en una revisión posterior del proyecto (ver
+> `CHANGELOG.md` y [docs/perfiles.md](docs/perfiles.md)). Lo que sigue
+> describe el estado en que se completó esta fase originalmente.
+
 Targets adicionales en Bake/Dockerfile. Smoke tests por perfil. Página de bienvenida local.
 
 ### Fase 6 — CLI guiada, workspace de labs, reset y `seclab update`
@@ -573,6 +587,19 @@ un `seclab update`), justo cuando el acceso remoto más importa —por ejemplo,
 siendo la única vía de entrada a una VM en la nube. No reabrir esta decisión
 sin releer esa sección primero.
 
+**Decisión ya tomada (a petición explícita del dueño del proyecto, sesión
+posterior): `tailscale serve` se aplica automáticamente a todos los puertos
+de `lab` (SSH y los servicios web — escritorio, code-server, Jupyter,
+bienvenida) en cuanto el nodo autentica, tanto en local
+(`docker-compose.tailscale.yml`) como en la nube
+(`terraform/oracle/templates/cloud-init.yaml.tftpl`).** Ya no se documenta
+como un paso manual por servicio ("sustituye el puerto y repite el
+comando"): dentro de la tailnet no hace falta redirigir puertos por SSH
+(`-L`) para llegar a ellos — la propia tailnet ya es el control de acceso, y
+duplicar esa protección con un túnel encima no aporta nada. Ver
+`docs/tailscale.md` y `docs/cloud.md`, "Habilitar Tailscale sin quedarte
+fuera".
+
 ### Fase 10 — DigitalOcean (proveedor de referencia, opcional)
 Terraform módulo DO. Bootstrap cloud-init. `seclab cloud` comandos. Estimación de costos, confirmación de gasto, `owner`/TTL obligatorios y `seclab cloud status`. TTL/autodestrucción.
 
@@ -592,7 +619,7 @@ Si encuentras un bloqueo, implementa primero una alternativa segura y documenta 
 Antes de terminar:
 
 - Ejecuta todos los validadores disponibles.
-- Construye al menos `lite` y `desktop` si el entorno lo permite. Si `full`/`full-msf` exceden los recursos del entorno, decláralos como no verificados en `TESTING_GAPS.md`; **no simules éxito**.
+- Construye al menos `lite` y `full` si el entorno lo permite. Si `full-msf` excede los recursos del entorno, decláralo como no verificado en `TESTING_GAPS.md`; **no simules éxito**.
 - Arranca el perfil mínimo y realiza smoke tests.
 - Comprueba que los servicios deshabilitados no aparezcan como unhealthy.
 - Comprueba que el backup no pueda crear una copia vacía silenciosa.

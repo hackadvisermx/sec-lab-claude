@@ -38,6 +38,26 @@ locals {
   saneo_owner      = replace(replace(lower(var.owner), " ", "-"), "/[^a-z0-9-]/", "-")
   nombre_instancia = "seclab-${local.saneo_owner}"
 
+  # Con Tailscale habilitado, el diseño es en DOS pasos, no uno: primero se
+  # verifica que Tailscale funciona (con SSH público seguro por si acaso, ver
+  # docs/cloud.md), y sólo entonces se cierra el SSH público — nunca los dos
+  # a la vez, porque si Tailscale no llegara a levantar, cerrar el SSH
+  # público en el mismo apply que lo activa dejaría la instancia
+  # inalcanzable sin ninguna forma de diagnosticar por qué. `privado_final`
+  # es la única condición real que cierra el SSH público (sin IP pública, sin
+  # regla de entrada, contenedor con el puerto sólo en 127.0.0.1); mientras
+  # sea false, la instancia se ve exactamente igual que sin Tailscale, así
+  # sea la primera vez o un rollback tras un problema.
+  privado_final = var.habilitar_tailscale && var.cerrar_ssh_publico
+
+  # Ambos perfiles full/full-msf traen escritorio y code-server activados
+  # por defecto (docker/entrypoint.sh, por_perfil()), y el contenedor exige
+  # un secreto no vacío para cada uno o aborta — igual que en local, donde
+  # 'seclab init' los genera. Aquí los genera Terraform, se inyectan al
+  # contenedor por --env-file (ver templates/cloud-init.yaml.tftpl) y NUNCA
+  # se escriben en ningún log ni en el estado en texto plano más de lo que ya
+  # implica cualquier atributo 'sensitive' de Terraform. Sólo alfanuméricos:
+  # el archivo de entorno es KEY=VALOR simple, sin comillas ni escapes.
   freeform_tags = {
     proyecto         = "seclab"
     owner            = var.owner
@@ -53,10 +73,16 @@ locals {
     proposito                 = var.curso
     fecha_expiracion          = var.fecha_expiracion
     puerto_ssh                = var.puerto_ssh
+    ssh_public_key            = var.ssh_public_key
+    vnc_password              = var.vnc_password
+    code_password             = var.code_password
     habilitar_autodestruccion = var.habilitar_autodestruccion
     habilitar_tailscale       = var.habilitar_tailscale
+    privado_final             = local.privado_final
     tailscale_auth_key        = var.tailscale_auth_key
     tailscale_hostname        = var.tailscale_hostname
+    habilitar_escritorio_host = var.habilitar_escritorio_host
+    rdp_password              = var.rdp_password
   })
 
   usa_flex = can(regex("Flex$", var.shape))
@@ -84,11 +110,34 @@ resource "oci_core_vcn" "seclab" {
   freeform_tags  = local.freeform_tags
 }
 
+# Gateway de Internet: sólo hace falta para dar una IP pública a la
+# instancia (tráfico ENTRANTE u saliente vía IP pública). Sólo se omite
+# cuando privado_final es true (Tailscale confirmado Y cerrar_ssh_publico
+# activado) — la salida a Internet la da el NAT Gateway de abajo en su
+# lugar. Mientras no se haya cerrado, hay IP pública igual que sin
+# Tailscale, para poder verificar que Tailscale funciona antes de perder el
+# acceso público (ver docs/cloud.md, "Habilitar Tailscale sin quedarte
+# fuera").
 resource "oci_core_internet_gateway" "seclab" {
+  count          = local.privado_final ? 0 : 1
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.seclab.id
   display_name   = "seclab-igw-${local.saneo_owner}"
   enabled        = true
+  freeform_tags  = local.freeform_tags
+}
+
+# NAT Gateway: da salida a Internet (docker pull de la imagen desde GHCR,
+# actualizaciones de paquetes, servidores de coordinación/DERP de Tailscale)
+# a una instancia SIN IP pública. Sin esto, quitar la IP pública dejaría la
+# instancia sin salida a Internet en absoluto — un Internet Gateway en OCI
+# sólo da tráfico a instancias CON IP pública asignada. Sólo tráfico
+# saliente-iniciado-desde-dentro; nada puede entrar por aquí.
+resource "oci_core_nat_gateway" "seclab" {
+  count          = local.privado_final ? 1 : 0
+  compartment_id = var.compartment_ocid
+  vcn_id         = oci_core_vcn.seclab.id
+  display_name   = "seclab-nat-${local.saneo_owner}"
   freeform_tags  = local.freeform_tags
 }
 
@@ -100,20 +149,30 @@ resource "oci_core_route_table" "seclab" {
   route_rules {
     destination       = "0.0.0.0/0"
     destination_type  = "CIDR_BLOCK"
-    network_entity_id = oci_core_internet_gateway.seclab.id
+    network_entity_id = local.privado_final ? oci_core_nat_gateway.seclab[0].id : oci_core_internet_gateway.seclab[0].id
   }
 }
 
-# Lista de seguridad explícita: sólo SSH de entrada, igual que el firewall de
-# DigitalOcean y GCP. Nada más se publica; los servicios web quedan en
-# 127.0.0.1 dentro de la instancia.
+# Lista de seguridad explícita: sólo SSH (y, opcionalmente, RDP) de entrada,
+# igual que el firewall de DigitalOcean y GCP. Nada más se publica; los
+# servicios web quedan en 127.0.0.1 dentro de la instancia.
 #
-# Con Tailscale habilitado, el SSH público deja de abrirse por completo: el
-# bloque `ingress_security_rules` es dinámico y no genera nada en ese caso.
-# El egress "all" se mantiene siempre — Tailscale necesita salida UDP hacia
-# sus servidores de coordinación/DERP, e "iniciada desde dentro" no necesita
-# ninguna regla de entrada correspondiente en una lista de seguridad
-# stateful como la de OCI.
+# Mientras no esté cerrado (privado_final = false) se abren dos o tres
+# puertos: el 22 (sshd del HOST Ubuntu, arriba desde los primeros segundos de
+# arranque, autenticado con la misma ssh_public_key vía el datasource
+# OracleCloud de cloud-init), puerto_ssh/2222 (sshd DENTRO del contenedor
+# SecLab, que tarda lo que tarde el docker pull de la imagen), y el 3389
+# (xrdp del HOST, sólo si habilitar_escritorio_host = true). El del host es
+# la vía de rescate real — no depende de Docker ni de la imagen — para
+# diagnosticar si el contenedor tarda o falla en arrancar; sin él, la única
+# señal disponible mientras el contenedor sube es un silencio total. Todo el
+# tráfico público (los tres puertos) sólo deja de abrirse cuando
+# privado_final es true: el bloque `ingress_security_rules` es dinámico y no
+# genera nada en ese caso. El egress "all" se mantiene siempre — Tailscale
+# necesita salida
+# UDP hacia sus servidores de coordinación/DERP, e "iniciada desde dentro"
+# no necesita ninguna regla de entrada correspondiente en una lista de
+# seguridad stateful como la de OCI.
 resource "oci_core_security_list" "seclab" {
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.seclab.id
@@ -125,14 +184,17 @@ resource "oci_core_security_list" "seclab" {
   }
 
   dynamic "ingress_security_rules" {
-    for_each = var.habilitar_tailscale ? [] : [1]
+    for_each = local.privado_final ? [] : toset(distinct(concat(
+      [22, var.puerto_ssh],
+      var.habilitar_escritorio_host ? [3389] : []
+    )))
     content {
       protocol = "6" # TCP
       source   = "0.0.0.0/0"
 
       tcp_options {
-        min = var.puerto_ssh
-        max = var.puerto_ssh
+        min = ingress_security_rules.value
+        max = ingress_security_rules.value
       }
     }
   }
@@ -146,7 +208,7 @@ resource "oci_core_subnet" "seclab" {
   dns_label                  = "seclabsub"
   route_table_id             = oci_core_route_table.seclab.id
   security_list_ids          = [oci_core_security_list.seclab.id]
-  prohibit_public_ip_on_vnic = false
+  prohibit_public_ip_on_vnic = local.privado_final
 }
 
 # --- Instancia ------------------------------------------------------------
@@ -169,7 +231,7 @@ resource "oci_core_instance" "seclab" {
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.seclab.id
-    assign_public_ip = true
+    assign_public_ip = !local.privado_final
   }
 
   source_details {
@@ -186,6 +248,10 @@ resource "oci_core_instance" "seclab" {
     precondition {
       condition     = !var.habilitar_tailscale || var.tailscale_auth_key != ""
       error_message = "habilitar_tailscale = true exige tailscale_auth_key (generada por ti en https://login.tailscale.com/admin/settings/keys; SecLab nunca la genera)."
+    }
+    precondition {
+      condition     = !var.habilitar_escritorio_host || length(var.rdp_password) >= 16
+      error_message = "habilitar_escritorio_host = true exige rdp_password de al menos 16 caracteres (SECLAB_OCI_RDP_PASSWORD en .env). Genera uno con 'seclab init --regenerar-secretos'."
     }
   }
 

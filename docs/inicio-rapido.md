@@ -5,8 +5,8 @@
 - Docker y Docker Compose. Ver [plataformas.md](plataformas.md) para las
   particularidades de macOS, Linux y Windows/WSL2.
 - Bash y Python 3, presentes en cualquiera de los tres sistemas.
-- Para el perfil `lite`: 2 GB de memoria disponibles para el contenedor y 5 GB
-  de disco. Ver [requisitos.md](requisitos.md).
+- Para el perfil `lite`: 4 GB de memoria disponibles para el contenedor y
+  ~10 GB de disco. Ver [requisitos.md](requisitos.md).
 
 ## Cinco minutos
 
@@ -44,18 +44,21 @@ Si prefieres elegir el perfil tú:
 Tu trabajo vive en `workspace/`, que está montado dentro del contenedor en
 `/workspace`. Es lo que sobrevive a cualquier reconstrucción de la imagen.
 
-## Con interfaz gráfica: el perfil `desktop`
+## Con interfaz gráfica
+
+Los tres perfiles (`lite`, `full`, `full-msf`) traen el escritorio: no hace
+falta pedir uno especial para tenerlo.
 
 ```bash
-./bin/seclab start --profile desktop
 ./bin/seclab open
 ```
 
 Eso abre la página de bienvenida, con los accesos al escritorio XFCE (en el
-navegador, por noVNC) y a code-server. Las contraseñas están en tu `.env`:
+navegador, por noVNC), a code-server y a un terminal por navegador (ttyd, el
+mismo zsh que da SSH). Las contraseñas están en tu `.env`:
 
 ```bash
-grep -E "SECLAB_(VNC|CODE)_PASSWORD" .env
+grep -E "SECLAB_(VNC|CODE|TERMINAL)_PASSWORD" .env
 ```
 
 La página no las muestra a propósito: se sirve por HTTP y acabaría en el
@@ -96,7 +99,7 @@ contraseña. Los detalles, en [backup.md](backup.md).
 
 ## Qué falta todavía
 
-Los cuatro perfiles están construidos, los workspaces de laboratorio
+Los tres perfiles están construidos, los workspaces de laboratorio
 (`seclab lab`), `seclab update` y la VPN multiperfil (`seclab vpn`) ya
 funcionan. Lo que falta: los paquetes opt-in y los targets vulnerables, en la
 Fase 12, y el servidor MCP y el despliegue en la nube, ambos opcionales. Un

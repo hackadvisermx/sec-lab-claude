@@ -273,11 +273,29 @@ grep SECLAB_CODE_PASSWORD .env
 Si acabas de regenerar los secretos con `seclab init --regenerar-secretos`,
 reinicia para que el contenedor recoja los nuevos: `./bin/seclab restart`.
 
-## Elegí el perfil `desktop` y no hay escritorio
+## El terminal web (ttyd) pide usuario y contraseña, y no los acepta
 
-Los servicios se activan según el perfil, pero una variable
-`SECLAB_HABILITAR_*` con un valor explícito manda sobre el perfil. Si tu `.env`
-viene de una instalación anterior a la Fase 5, tendrá `false` escrito:
+El usuario es `SECLAB_USUARIO` (`seclab` salvo que lo cambiaras) y la
+contraseña es `SECLAB_TERMINAL_PASSWORD`, un secreto distinto al de VNC y al
+de code-server:
+
+```bash
+grep -E "SECLAB_(USUARIO|TERMINAL_PASSWORD)" .env
+```
+
+Si acabas de regenerar los secretos con `seclab init --regenerar-secretos`,
+reinicia para que el contenedor recoja el nuevo: `./bin/seclab restart`.
+
+## No hay escritorio, o el laboratorio no arranca por un servicio gráfico
+
+Los tres perfiles (`lite`, `full`, `full-msf`) traen el escritorio, code-server
+y el terminal por navegador desde `lite`: ya no existe un perfil sin ellos. Si
+no ves el escritorio, o el contenedor aborta al arrancar quejándose de alguno
+de estos servicios, hay dos causas posibles.
+
+**Una variable `SECLAB_HABILITAR_*` con un valor explícito manda sobre el
+perfil.** Si tu `.env` viene de una instalación anterior, puede tener `false`
+escrito a mano:
 
 ```bash
 grep SECLAB_HABILITAR .env
@@ -288,8 +306,24 @@ Déjalas **vacías** para que decida el perfil, y reinicia:
 ```
 SECLAB_HABILITAR_DESKTOP=
 SECLAB_HABILITAR_CODE=
+SECLAB_HABILITAR_TERMINAL=
 SECLAB_HABILITAR_WEB=
 ```
+
+**`SECLAB_PERFIL` no es uno de los tres válidos.** El entrypoint comprueba
+cada servicio activado contra los binarios que trae la imagen, y si no
+coinciden, el laboratorio no arranca con un mensaje como este:
+
+```
+el escritorio está activado pero el perfil 'X' no lo trae (falta Xvnc).
+Revisa SECLAB_PERFIL (debe ser 'lite', 'full' o 'full-msf'), o pon
+SECLAB_HABILITAR_DESKTOP=false en .env.
+```
+
+Esto ya no debería pasar por elegir un perfil "equivocado" —los tres traen el
+escritorio—, pero sí si `SECLAB_PERFIL` tiene un valor que no es ninguno de
+los tres (un resto de una instalación muy anterior, o un typo). Corrige la
+variable y reinicia.
 
 ## El puerto 2222 ya está ocupado
 

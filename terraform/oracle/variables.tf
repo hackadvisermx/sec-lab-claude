@@ -136,6 +136,43 @@ variable "ssh_public_key" {
   }
 }
 
+
+# Los tres siguientes NO los genera este módulo (a diferencia de un primer
+# diseño con random_password, descartado): el mismo generador que los
+# secretos del contenedor local ('seclab init'/'seclab init
+# --regenerar-secretos', ver bin/seclab) los deja en .env
+# (SECLAB_OCI_VNC_PASSWORD/CODE_PASSWORD/RDP_PASSWORD), y
+# sincronizar_tfvars_oracle_desde_env (lib/cloud.sh) los copia aquí. Un solo
+# mecanismo de generación para local y remoto, en vez de dos.
+variable "vnc_password" {
+  description = "Contraseña del escritorio del contenedor (noVNC). La genera 'seclab init', no este módulo. Sólo los primeros 8 caracteres son significativos de todos modos (VncAuth clásico, cifrado DES de 8 bytes) — el resto se acepta pero se ignora al autenticar."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.vnc_password) >= 16
+    error_message = "vnc_password debe tener al menos 16 caracteres (misma exigencia que docker/entrypoint.sh). Genera uno con 'seclab init --regenerar-secretos'."
+  }
+}
+
+variable "code_password" {
+  description = "Contraseña de code-server del contenedor. La genera 'seclab init', no este módulo."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.code_password) >= 16
+    error_message = "code_password debe tener al menos 16 caracteres (misma exigencia que docker/entrypoint.sh). Genera uno con 'seclab init --regenerar-secretos'."
+  }
+}
+
+variable "rdp_password" {
+  description = "Contraseña real del usuario 'ubuntu' del HOST (RDP, puerto 3389). Sólo se usa si habilitar_escritorio_host = true; la genera 'seclab init', no este módulo. La condición real (>= 16 caracteres cuando habilitar_escritorio_host = true) se comprueba en el lifecycle.precondition de oci_core_instance.seclab: una validación de variable no puede referenciar otra variable de forma fiable en este proyecto (mismo criterio ya usado para tailscale_auth_key)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "seclab_registry" {
   description = "Registry OCI del que se hace pull de la imagen (ver SECLAB_REGISTRY en .env.example). Nunca Docker Hub a secas por defecto."
   type        = string
@@ -163,19 +200,60 @@ variable "puerto_ssh" {
   default     = 2222
 }
 
+variable "ssh_username" {
+  description = "Usuario del sistema DENTRO del contenedor SecLab (imagen publicada con ARG SECLAB_USUARIO=seclab en docker/Dockerfile), NO el usuario 'ubuntu' de la VM anfitriona. El puerto_ssh se publica desde el contenedor (docker run -p puerto_ssh:22), así que quien conecta ahí siempre llega a este usuario, nunca a 'ubuntu' — mismo criterio que 'ssh_username' en terraform/gcp/variables.tf."
+  type        = string
+  default     = "seclab"
+}
+
+variable "habilitar_escritorio_host" {
+  description = <<-EOT
+    Instala un escritorio XFCE + xrdp en el HOST Ubuntu (fuera del
+    contenedor SecLab, que ya trae su propio escritorio por noVNC — ver
+    docker/entrypoint.sh). Opt-in explícito: añade paquetes reales
+    (xfce4, xrdp), un servicio más que mantener y RAM/CPU de más en la VM.
+    Pensado para configurar el HOST directamente (drivers, red, lo que sea
+    que no tenga sentido hacer dentro de un contenedor), no para el trabajo
+    normal de laboratorio — para eso ya está el escritorio del contenedor.
+    Requiere autenticación por contraseña real (RDP no soporta llave SSH):
+    la genera Terraform (random_password.rdp_host), nunca un valor por
+    defecto. El puerto 3389 sigue exactamente la misma regla de dos pasos
+    que el SSH del host (ver cerrar_ssh_publico): abierto públicamente
+    mientras no se cierre, y siempre servido también por Tailscale.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "habilitar_tailscale" {
   description = <<-EOT
     Instala y arranca Tailscale en la instancia durante el bootstrap
     (paquete oficial, fijado por versión, vía el repositorio apt de
     Tailscale — nunca el instalador remoto 'curl | sh' sin verificar). Con
-    esto en true:
-      - El puerto SSH deja de publicarse en la lista de seguridad de OCI
-        (0.0.0.0/0) y el contenedor deja de publicarlo en todas las
-        interfaces: pasa a 127.0.0.1, igual que el resto de servicios web.
-      - 'tailscale up --ssh' te deja entrar por la tailnet sin exponer nada
-        a Internet.
-    Requiere 'tailscale_auth_key'. Ver docs/cloud.md, "Tailscale en un
-    despliegue cloud".
+    esto en true, Tailscale corre desde el primer arranque, pero el SSH
+    público SIGUE abierto hasta que además pongas cerrar_ssh_publico = true
+    (ver esa variable): son dos pasos deliberadamente separados, para poder
+    comprobar que Tailscale funciona antes de perder el único otro camino de
+    entrada. Requiere 'tailscale_auth_key'. Ver docs/cloud.md, "Habilitar
+    Tailscale sin quedarte fuera".
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "cerrar_ssh_publico" {
+  description = <<-EOT
+    Segundo paso, deliberadamente separado de habilitar_tailscale: sólo con
+    ESTO en true (y habilitar_tailscale también en true) la instancia pierde
+    la IP pública, el puerto SSH deja de publicarse en la lista de
+    seguridad de OCI (0.0.0.0/0) y el contenedor deja de publicarlo en todas
+    las interfaces (pasa a 127.0.0.1, igual que el resto de servicios web);
+    la salida a Internet la sigue dando un NAT Gateway. Ver docs/cloud.md,
+    "Habilitar Tailscale sin quedarte fuera": no actives esto en el mismo
+    apply que activa Tailscale por primera vez — primero confirma con
+    'ssh -p puerto_ssh usuario@tailscale_hostname' que Tailscale sí conecta,
+    y sólo entonces pon esto en true y vuelve a aplicar (no recrea la
+    instancia, sólo la red).
   EOT
   type        = bool
   default     = false

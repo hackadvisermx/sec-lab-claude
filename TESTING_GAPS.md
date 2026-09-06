@@ -307,11 +307,34 @@ Los cuatro fallos salieron al ejecutar, no al leer:
 | **`full` y `full-msf` bajo su carga real** | La VM de Docker de esta máquina tiene 7 GB y esos perfiles piden 8. `seclab doctor full` los **rechaza**, como debe | Las imágenes se construyeron y los smoke tests pasaron con el límite de 4 GB del contenedor, pero **nadie ha usado Burp, un navegador y Metasploit a la vez** en ellos. Es exactamente el escenario para el que se pide 8 GB, y sigue sin probarse |
 | **Uso real del escritorio** (mover ventanas, copiar y pegar, portapapeles entre host y lab, teclado no inglés) | Requiere sesión interactiva con contraseña, que no se ha introducido | Verificado por captura del display :1: barra, lanzadores, accesos directos, tema y glifos de tmux se ven bien, y Firefox y la terminal abren ventana. Lo que sigue sin probar es la **interacción**: ratón, portapapeles entre host y contenedor, y distribuciones de teclado que no sean la inglesa |
 | **Rendimiento del escritorio en arm64 con render por software** | Sin medir | `libgl1-mesa-dri` va por software y el manifiesto lo anota. Puede ir lento con ventanas grandes; no se ha cuantificado |
-| **Build multi-arch de `desktop`, `full` y `full-msf`** | Emulación QEMU: el `apt install` de XFCE cruzado tarda más de lo razonable en una sesión de desarrollo | Los checksums están fijados por arquitectura y verificados para las dos. El build real de amd64 es trabajo de la CI (Fase 8), en runner nativo |
+| **Build multi-arch de `full` y `full-msf`** (perfil `desktop` ya fusionado en `lite`) | Emulación QEMU: el `apt install` de XFCE cruzado tarda más de lo razonable en una sesión de desarrollo | Los checksums están fijados por arquitectura y verificados para las dos. El build real de amd64 es trabajo de la CI (Fase 8), en runner nativo. Ver también la actualización posterior sobre las 13 herramientas nuevas, al final de esta fase |
 | **Linux y Windows/WSL2** | Sólo macOS arm64 | Sigue siendo la brecha más importante del proyecto, y el escritorio la agrava: en WSL2 el navegador está en Windows y `seclab open` usa `wslview`, que **no se ha ejecutado nunca** |
 | **Jupyter** | No está en ninguna imagen | La fontanería condicional existe (variable, healthcheck, tarjeta en la página de bienvenida) y activarlo aborta el arranque con un mensaje claro. Llega con los paquetes de la Fase 12 |
 | **Paquetes opt-in** (`web`, `ad`, `pwn`, `forensics`, `cloud`, `mobile`) | Son la Fase 12 | `full` trae el núcleo de web, AD, privesc y CTF; el resto no está |
 | **ShellCheck y Hadolint** | No instalados en la máquina de desarrollo | `make lint` valida la sintaxis de los quince scripts y los ejecuta si aparecen. Obligatorios en la CI de la Fase 8 |
+
+### Actualización — fusión de perfiles y 13 herramientas nuevas (sesión posterior)
+
+La fusión del perfil `desktop` en `lite` (quedan tres perfiles: `lite`,
+`full`, `full-msf`) y las 13 herramientas nuevas de `full` (ver
+`CHANGELOG.md`) están **hechas y verificadas**: `full` y `full-msf` se
+construyeron y arrancaron con `docker build`/`docker run` reales en `arm64`
+esta misma sesión, de punta a punta, con resultado correcto.
+
+**Pendiente real: build amd64.** No se pudo completar en esta máquina de
+desarrollo (host arm64) por una limitación de la emulación QEMU/binfmt, no
+por un defecto del Dockerfile ni de la instalación de las herramientas
+nuevas: un paso temprano y no relacionado —la extracción del tarball de Oh
+My Zsh— falla bajo emulación con `tar: ... Function not implemented` antes
+de llegar siquiera a las herramientas nuevas. Como mitigación, los checksums
+reales por arquitectura de las 13 herramientas se verificaron igualmente,
+de forma independiente y fuera de un build completo, con `curl` +
+`sha256sum` directos contra cada publicación oficial.
+
+El build real de amd64 sigue pendiente de un runner nativo. Se espera que
+funcione sin problemas en GitHub Actions (Fase 8): la limitación de QEMU
+observada es específica de la emulación en esta máquina de desarrollo
+arm64, no de la lógica del Dockerfile.
 
 ---
 
@@ -774,6 +797,52 @@ tenía prohibido tocar. Nada de esto se intentó, ni parcialmente.
 | Rechazo de `seclab cloud plan/up --provider oracle` por falta de credenciales (`exigir_credenciales_oracle`) | El CLI `oci` está instalado en esta máquina de desarrollo; esta sesión tenía prohibido buscar, leer o siquiera comprobar la existencia de `~/.oci/config` o de credenciales activas configuradas, así que este camino de rechazo deliberadamente no se ejercitó aquí (a diferencia del equivalente de GCP, donde sí se confirmó primero que no había ninguna fuente de credenciales antes de probarlo) | En una máquina sin `~/.oci/config` ni variables `OCI_CLI_*`/`TF_VAR_*` de Oracle: repetir la prueba equivalente a la de GCP y confirmar el mismo resultado (rechazo antes de invocar Terraform) |
 | Backend remoto real de GCP (`"gcs"`) y de Oracle Cloud (`"s3"` vía Object Storage) | No se configuró ningún backend con credenciales reales (a propósito) | Configurar un bucket de GCS de pruebas (backend `gcs`, confirmar que el locking nativo efectivamente bloquea un segundo `apply` concurrente) y un bucket de Object Storage de OCI vía su API S3-compatible (confirmar la ausencia de locking, igual que con Spaces en la Fase 10) |
 | Windows/WSL2 y Linux nativo para cualquier parte de esta fase | Sólo macOS arm64, igual que el resto del proyecto | Misma brecha de plataforma que arrastran todas las fases anteriores |
+
+### Actualización — primer despliegue real en Oracle Cloud (sesión posterior)
+
+A diferencia de todo lo anterior en esta fase, esta sí fue una sesión con
+`terraform apply` real, contra la cuenta de Oracle Cloud del dueño del
+proyecto, con su autorización explícita en cada paso (incluido el "acepto"
+interactivo que exige `seclab cloud up`, que esta sesión nunca pudo saltarse
+— el propio harness bloqueó un intento de `terraform apply -auto-approve`
+por no pasar por ese gate). Encontró y corrigió los bugs reales descritos en
+[CHANGELOG.md](CHANGELOG.md) (bajo "Fase 11, Oracle Cloud"): IP pública fija
+con Tailscale, `ssh_user` apuntando al usuario equivocado, falta de
+`--env-file` en el `docker run` (por lo que NINGUNA variable de
+`/etc/seclab-cloud/entorno` llegaba nunca al contenedor), `SECLAB_SSH_PUBKEY`
+sin pasar, y `SECLAB_HABILITAR_DESKTOP`/`CODE` sin secretos. Confirmado
+end-to-end: `ssh -p 2222 seclab@<ip>` entra al contenedor `full-msf` real,
+`msfconsole`/`nmap` presentes, `/workspace` montado.
+
+**Verificado de verdad esta vez**: `terraform apply`/`destroy` reales
+(múltiples veces, iterando sobre `VM.Standard.A1.Flex` y `.E4.Flex`, ambos
+sin capacidad en `mx-monterrey-1` en el momento de la prueba — confirmado con
+`oci limits resource-availability get`, que muestra cupo de sobra pero no
+puede predecir la capacidad física real del datacenter — hasta encontrar que
+`VM.Standard.E5.Flex` sí tenía capacidad); `seclab cloud connect` con el
+`ssh_user` corregido; acceso de rescate por el puerto 22 del host (via
+`ubuntu@IP`, sin pasar por Docker) recién añadido; `oci limits
+resource-availability`, `oci compute console-history capture` y `oci
+instance-agent command create` (Run Command de OCI) como vías de diagnóstico
+reales cuando SSH no respondía.
+
+**Sigue sin verificar / pendiente real**, encontrado en esta misma sesión:
+
+| Pendiente | Detalle |
+|---|---|
+| `seclab cloud wait --provider oracle` nunca confirma el bootstrap | Comprueba `/etc/seclab-cloud/bootstrap-completo` conectando por `puerto_ssh` (2222) con el usuario del contenedor (`seclab`) — pero ese archivo lo escribe el cloud-init **del host**, no existe dentro del contenedor. El comando conecta bien pero jamás encuentra el archivo: falla por timeout siempre, incluso cuando el bootstrap sí terminó bien. Corregir probablemente exige comprobar ese archivo por el puerto 22 (host, usuario `ubuntu`) en vez de por `puerto_ssh`, o mover la comprobación a otro archivo dentro del contenedor. Mismo patrón compartido con `terraform/digitalocean` y `terraform/gcp`, sin confirmar allí. |
+| `--env-file` faltante, sin confirmar en DigitalOcean/GCP | El bug real más profundo de esta sesión (ninguna variable de `entorno` llegaba al contenedor) se corrigió sólo en `terraform/oracle`. Los cloud-init de `terraform/digitalocean` y `terraform/gcp` tienen la misma estructura de `ExecStart` sin `--env-file`/`-e`: muy probablemente el mismo bug, nunca confirmado porque ninguno de los dos ha tenido tampoco un `apply` real todavía. |
+| Instance Console Connection y Run Command de OCI, usados como diagnóstico real esta sesión | Quedó una `oci compute instance-console-connection` de prueba (llave RSA descartable en `/tmp`, ya no en disco) creada durante el diagnóstico; no se automatizó ni se documentó como parte del flujo normal de `seclab cloud`, sólo se usó ad-hoc para depurar. |
+| Generación de secretos (`seclab init`) para el despliegue en la nube sólo implementada en Oracle | `terraform/digitalocean` y `terraform/gcp` no leen `SECLAB_OCI_VNC_PASSWORD`/`CODE_PASSWORD`/`RDP_PASSWORD` (esos nombres son específicos de Oracle, `SECLAB_OCI_*`) ni tienen su propio equivalente: si algún día tienen un `apply` real con perfil `full`/`full-msf`, probablemente se topen con el mismo bug que Oracle tuvo esta sesión (contenedor en bucle de crash por falta de esos secretos). Replicar ahí el mismo patrón (generar en `seclab init`, sincronizar a `terraform.tfvars`) sería el mismo trabajo que ya se hizo para Oracle. |
+| Terminal por navegador (ttyd) añadido al Docker, no desplegado todavía | A petición explícita del dueño del proyecto: `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/salud.sh`, `docker-compose*.yml` y la documentación ya tienen el servicio completo (ver CHANGELOG.md), verificado con un build y un `docker run` reales en `arm64`. Pero la imagen `full-msf` publicada en GHCR sigue sin este cambio (falta un ciclo de `seclab image publish`/CI), y ningún módulo de Terraform (Oracle, DigitalOcean, GCP) expone el puerto 7681 ni genera `SECLAB_TERMINAL_PASSWORD` — si se despliega en la nube tal cual, `SECLAB_HABILITAR_TERMINAL` se resolvería `true` para `full`/`full-msf` pero el secreto llegaría vacío, mismo bucle de crash que ya se vio con VNC/code-server. Falta: (1) publicar una imagen nueva, (2) replicar en Oracle el patrón `random_password` + `--env-file` + puerto publicado + entrada en `tailscale serve`, (3) lo mismo en DigitalOcean/GCP si alguna vez tienen un `apply` real. |
+
+**Resuelto en esta misma sesión, tras un segundo `apply` real**: escritorio y
+code-server en la nube (Oracle) — `terraform/oracle/main.tf` ahora genera
+`SECLAB_VNC_PASSWORD`/`SECLAB_CODE_PASSWORD` reales con `random_password` y
+los inyecta por `--env-file`, expuestos como salidas `sensitive`. También se
+implementó `tailscale serve` automático (sin pasos manuales) para el SSH y
+los cuatro puertos web, tanto en Oracle como en el nodo Tailscale local
+(`docker-compose.tailscale.yml`) — ver CHANGELOG.md.
 
 ---
 

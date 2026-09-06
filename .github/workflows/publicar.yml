@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        perfil: [lite, desktop, full]
+        perfil: [lite, full]
     outputs: {}
     steps:
       - uses: actions/checkout@v4
@@ -67,10 +67,11 @@ jobs:
         # full-msf con Metasploit) agota el disco por defecto del runner
         # hospedado de GitHub (~14 GB libres de partida, con Android SDK,
         # .NET y toolchains que SecLab nunca usa ya ocupando buena parte).
-        # Encontrado en esta sesión: el perfil 'desktop' agotó el disco a
-        # mitad del build de SBOM (0 MB libres). Se borra sólo lo que ocupa
-        # espacio y no hace falta para construir/firmar/escanear una imagen
-        # Docker, nunca algo que el propio job vaya a necesitar después.
+        # Encontrado en una sesión anterior: el entonces perfil 'desktop'
+        # (hoy fusionado en 'lite', que trae el mismo escritorio) agotó el
+        # disco a mitad del build de SBOM (0 MB libres). Se borra sólo lo que
+        # ocupa espacio y no hace falta para construir/firmar/escanear una
+        # imagen Docker, nunca algo que el propio job vaya a necesitar después.
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
             /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
@@ -211,10 +212,11 @@ jobs:
         # full-msf con Metasploit) agota el disco por defecto del runner
         # hospedado de GitHub (~14 GB libres de partida, con Android SDK,
         # .NET y toolchains que SecLab nunca usa ya ocupando buena parte).
-        # Encontrado en esta sesión: el perfil 'desktop' agotó el disco a
-        # mitad del build de SBOM (0 MB libres). Se borra sólo lo que ocupa
-        # espacio y no hace falta para construir/firmar/escanear una imagen
-        # Docker, nunca algo que el propio job vaya a necesitar después.
+        # Encontrado en una sesión anterior: el entonces perfil 'desktop'
+        # (hoy fusionado en 'lite', que trae el mismo escritorio) agotó el
+        # disco a mitad del build de SBOM (0 MB libres). Se borra sólo lo que
+        # ocupa espacio y no hace falta para construir/firmar/escanear una
+        # imagen Docker, nunca algo que el propio job vaya a necesitar después.
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
             /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup \
@@ -262,7 +264,7 @@ jobs:
       - name: Escaneo de la imagen publicada con Trivy (informativo, no bloquea)
         # Decisión explícita del dueño del proyecto: Trivy NUNCA bloquea la
         # publicación, en ningún perfil — ver el comentario completo en el
-        # job de la matriz (lite/desktop/full), más arriba en este mismo
+        # job de la matriz (lite/full), más arriba en este mismo
         # archivo, y TESTING_GAPS.md (Fase 8).
         #
         # scanners: vuln — sin esto, Trivy también activa su escáner de

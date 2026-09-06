@@ -205,14 +205,12 @@ fi
 titulo "4. Exposición de servicios en Docker Compose"
 # -----------------------------------------------------------------------------
 # Se revisan TODOS los archivos de composición que el CLI puede aplicar, no
-# sólo los que Compose carga por defecto. El override del escritorio publica
-# tres puertos más, y revisar sin él daría por segura una configuración que en
-# el perfil `desktop` expone bastante más.
+# sólo los que Compose carga por defecto. Los puertos del escritorio ya viven
+# directamente en docker-compose.yml (los tres perfiles los usan), así que no
+# hace falta un override aparte para verlos aquí.
 archivos_compose=(-f "${RAIZ}/docker-compose.yml")
 [ -f "${RAIZ}/docker-compose.override.yml" ] && \
     archivos_compose+=(-f "${RAIZ}/docker-compose.override.yml")
-[ -f "${RAIZ}/docker-compose.desktop.yml" ] && \
-    archivos_compose+=(-f "${RAIZ}/docker-compose.desktop.yml")
 # El override de VPN (Fase 7) se valida también aquí. Con el diseño actual no
 # depende de ningún estado en .env para resolver: sólo añade a 'lab' NET_ADMIN
 # y /dev/net/tun, así que la composición es válida siempre, haya o no un

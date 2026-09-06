@@ -55,7 +55,7 @@ printf '| %-22s | %-28s | %-7s | %s\n' "----------------------" "---------------
 ausentes=""
 
 # SECLAB_LISTA_PAQUETES puede traer varias listas separadas por espacios: un
-# perfil se construye sobre otro (desktop sobre lite) y el manifiesto tiene que
+# perfil se construye sobre otro (full sobre lite) y el manifiesto tiene que
 # reflejar todo lo que hay dentro, no sólo lo que añadió la última etapa.
 for lista in ${SECLAB_LISTA_PAQUETES:-/opt/seclab/paquetes-lite.txt}; do
     [ -r "$lista" ] || continue

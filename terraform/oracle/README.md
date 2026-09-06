@@ -55,18 +55,41 @@ Cambia estas dos variables en `terraform.tfvars` (o en `.env` si usas
 `SECLAB_OCI_*`, ver `sincronizar_tfvars_oracle_desde_env` en `lib/cloud.sh`)
 y repite `seclab cloud plan`/`up`:
 
-| | ARM (por defecto) | x86 (fallback) |
-|---|---|---|
-| `shape` | `VM.Standard.A1.Flex` | `VM.Standard.E4.Flex` |
-| `image_ocid` (región `mx-monterrey-1`, resuelto el 2026-09-05 — vuelve a resolverlo para tu región/fecha con el comando de arriba) | `ocid1.image.oc1.mx-monterrey-1.aaaaaaaa33gwf2bybgepuwu4zzg45ony3etaj5oaxixfpaf4vwhzgpmwyqxq` | `ocid1.image.oc1.mx-monterrey-1.aaaaaaaapsyapvnmysguthfj3rtypwipp7rx3eudhihanwdtnvk635fal4ja` |
+| | ARM (por defecto) | x86 (fallback, E4) | x86 (fallback, E5) |
+|---|---|---|---|
+| `shape` | `VM.Standard.A1.Flex` | `VM.Standard.E4.Flex` | `VM.Standard.E5.Flex` |
+| `image_ocid` (región `mx-monterrey-1`, resuelto el 2026-09-05 — vuelve a resolverlo para tu región/fecha con el comando de arriba) | `ocid1.image.oc1.mx-monterrey-1.aaaaaaaa33gwf2bybgepuwu4zzg45ony3etaj5oaxixfpaf4vwhzgpmwyqxq` | `ocid1.image.oc1.mx-monterrey-1.aaaaaaaapsyapvnmysguthfj3rtypwipp7rx3eudhihanwdtnvk635fal4ja` | mismo OCID que E4 (ambos x86_64) |
 
-**Aviso de coste**: `VM.Standard.E4.Flex` (AMD EPYC) **no forma parte del
-Always Free tier** — a diferencia de `VM.Standard.A1.Flex`, factura desde el
-primer minuto. Revisa la tabla de costes que muestra `seclab cloud up` antes
-de confirmar, y recuerda que el gasto es siempre personal (`docs/cloud.md`).
-El único x86 del Always Free (`VM.Standard.E2.1.Micro`) tiene 1 GB de RAM,
-muy por debajo de lo que necesita el perfil `full`/`full-msf` (ver
-`docs/requisitos.md`), así que no es una alternativa realista aquí.
+**"Out of host capacity" no siempre se resuelve cambiando de forma una sola
+vez.** Es un problema de capacidad física del datacenter, no de tu cuota
+(`oci limits resource-availability get` puede mostrar cupo de sobra y el
+`apply` seguir fallando igual) — y varía por generación de CPU, no sólo por
+arquitectura. En una prueba real contra `mx-monterrey-1`, tanto
+`VM.Standard.A1.Flex` (ARM) como `VM.Standard.E4.Flex` (AMD EPYC, generación
+anterior) fallaron por falta de capacidad, mientras que
+`VM.Standard.E5.Flex` (AMD EPYC Genoa, más nueva) sí tenía capacidad libre en
+ese momento. Si una forma falla, vale la pena probar otra generación de la
+misma familia antes de darla por perdida o cambiar de proveedor. También
+puedes probar un tamaño más chico dentro de la misma forma con
+`SECLAB_OCI_OCPUS`/`SECLAB_OCI_MEMORIA_GB` (ver `.env.example`) — a veces
+falta capacidad sólo para el tamaño pedido, no para toda la forma.
+
+**Aviso de coste**: ni `VM.Standard.E4.Flex` ni `VM.Standard.E5.Flex` (AMD
+EPYC) forman parte del Always Free tier — a diferencia de
+`VM.Standard.A1.Flex`, facturan desde el primer minuto (~$45-50 USD/mes con
+2 OCPU/8-12GB, ver la tabla de costes que muestra `seclab cloud up`).
+Recuerda que el gasto es siempre personal (`docs/cloud.md`). El único x86 del
+Always Free (`VM.Standard.E2.1.Micro`) tiene 1 GB de RAM, muy por debajo de
+lo que necesita el perfil `full`/`full-msf` (ver `docs/requisitos.md`), así
+que no es una alternativa realista aquí.
+
+## Tailscale, sin quedarte fuera
+
+Ver `docs/cloud.md`, sección "Habilitar Tailscale sin quedarte fuera": el
+flujo correcto es en dos pasos (`habilitar_tailscale` primero, verificar,
+`cerrar_ssh_publico` después), nunca los dos a la vez, y cómo configurar la
+auth key (`Reusable` + un tag que desactive el vencimiento de node key) para
+no tener que regenerarla en cada recreación de la instancia.
 
 ## Por qué este módulo crea su propia VCN
 

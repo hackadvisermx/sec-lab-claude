@@ -1,14 +1,27 @@
-# Paquetes del perfil `full`: web, Active Directory, escalada de privilegios y
-# CTF. Se instalan SOBRE los de `lite` y `desktop`.
+# Paquetes del perfil `full`: web, Active Directory, escalada de privilegios,
+# CTF, recon/fuzzing, pivoting y forense. Se instalan SOBRE los de `lite`
+# (que ya trae el escritorio fusionado — ver docker/paquetes-lite.txt).
 #
 # Todo lo de esta lista viene de apt porque el repositorio de Ubuntu 26.04 está
 # al día en estas herramientas: sqlmap 1.10, ffuf 2.1, gobuster 3.8,
-# impacket 0.13, hashcat 7.1, radare2 6.0, pwntools 4.15. Se comprobó una por
-# una antes de escribirla aquí; ver docs/politica-herramientas.md.
+# impacket 0.13, hashcat 7.1, radare2 6.0, pwntools 4.15, tshark 4.6.4,
+# bettercap 2.33.0, proxychains4 4.17, mitmproxy 8.1.1, tinyproxy 1.11.3,
+# crunch 3.6, checksec 2.6.0, hexedit 1.6, wxhexeditor 0.24, ROPgadget 7.7
+# (paquete python3-ropgadget), Shodan CLI (viene con python3-shodan 1.31.0).
+# Se comprobó una por una antes de escribirla aquí; ver
+# docs/politica-herramientas.md.
 #
 # Lo que en Ubuntu va por detrás —nikto 2.1.5 frente a 2.6.1— o no existe
-# —linPEAS, winPEAS, pspy, wordlists— se instala desde su publicación oficial
-# con versión fijada y checksum verificado, y queda anotado en el manifiesto.
+# —linPEAS, winPEAS, pspy, wordlists, subfinder, nuclei, feroxbuster,
+# rustscan, httpx-toolkit (así se llama el binario: 'httpx' ya lo usa el
+# paquete de PyPI del mismo nombre, dependencia transitiva de netexec/
+# pwncat-cs), chisel, ligolo-ng, enum4linux-ng, pwndbg, netexec,
+# pwncat-cs, one_gadget, OWASP ZAP— se instala desde su publicación oficial
+# con versión fijada y checksum verificado, y queda anotado en el
+# manifiesto. searchsploit/ExploitDB y Burp Suite Community se evaluaron y
+# se descartaron a propósito: el primero tiene su repo de GitHub archivado
+# desde 2022 (fuente congelada, contraria al propio sentido de la
+# herramienta) y el segundo no publica ningún checksum oficial verificable.
 
 # --- Web ---
 sqlmap
@@ -33,6 +46,13 @@ smbmap
 ldap-utils
 krb5-user
 python3-impacket
+# Dependencias de enum4linux-ng, que se instala fijado desde su publicación
+# oficial (es un script Python, no un paquete de Ubuntu): necesita nmblookup,
+# net y rpcclient (samba-common-bin, smbclient ya está arriba) además de las
+# tres librerías Python.
+samba-common-bin
+python3-ldap3
+python3-yaml
 
 # --- Contraseñas y hashes ---
 john
@@ -42,9 +62,32 @@ hashcat
 radare2
 gdb
 python3-pwntools
+python3-ropgadget
 ltrace
 strace
 binwalk
 foremost
 libimage-exiftool-perl
 steghide
+hexedit
+wxhexeditor
+checksec
+
+# --- Recon/fuzzing adicional ---
+python3-shodan
+
+# --- Red/MitM y pivoting ---
+bettercap
+tshark
+proxychains4
+mitmproxy
+tinyproxy
+
+# --- Cracking adicional ---
+crunch
+
+# --- Dependencias de herramientas fijadas de más abajo ---
+# ruby: para el gem one_gadget. default-jre-headless: para OWASP ZAP (Java).
+ruby
+ruby-dev
+default-jre-headless

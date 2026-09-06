@@ -250,10 +250,14 @@ Resumen de lo que ya explica cada `versions.tf`/`backend.hcl.example`:
   generación de objeto de Google Cloud Storage) — no hace falta ningún
   servicio adicional. Es el único de los tres que resuelve el locking sin
   depender de Terraform Cloud ni de una tabla externa.
-- **Oracle Cloud**: Object Storage también expone una API de compatibilidad
-  S3, y tampoco ofrece un servicio de locking nativo equivalente a DynamoDB
-  (misma limitación que DigitalOcean). Se recomienda Terraform Cloud por el
-  mismo motivo.
+- **Oracle Cloud**: **por defecto usa backend local** (decisión explícita
+  para uso personal, un solo operador — ver `terraform/oracle/versions.tf`):
+  el `.tfstate` vive en `terraform/oracle/terraform.tfstate`, fuera de Git,
+  sin locking. Si más adelante hay varias personas aplicando cambios a la
+  vez, Object Storage expone una API de compatibilidad S3 pero, igual que
+  DigitalOcean, sin locking nativo equivalente a DynamoDB — la alternativa
+  documentada sigue siendo Terraform Cloud (ver `backend.hcl.example` para
+  migrar).
 
 Detalle completo de cada uno en `terraform/digitalocean/versions.tf`,
 `terraform/gcp/versions.tf` y `terraform/oracle/versions.tf`.
@@ -364,6 +368,93 @@ que SecLab pueda recuperar por ti.
   límites. **No lo des por garantizado**: los límites y la disponibilidad del
   free tier los fija y cambia Oracle, no SecLab — comprueba la página oficial
   vigente antes de asumir gasto cero.
+- **"Out of host capacity" no es un problema de tu cuota**: `oci limits
+  resource-availability get` puede mostrar cupo de sobra (cuota asignada a tu
+  tenancy) mientras el `apply` sigue fallando — son dos cosas distintas. La
+  cuota es tuya; la capacidad física del datacenter no la expone ninguna API
+  pública, sólo se descubre intentando lanzar de verdad. Si una forma falla,
+  antes de darla por perdida prueba otra generación de la misma familia (por
+  ejemplo `VM.Standard.E5.Flex` si `E4.Flex` falla) — ver
+  `terraform/oracle/README.md`, "Si tu región no tiene capacidad ARM
+  disponible".
+- **`ssh_user` es el usuario DENTRO del contenedor** (`"seclab"` por
+  defecto), no el `"ubuntu"` de la VM anfitriona: `puerto_ssh` (2222 por
+  defecto) se publica desde el `docker run` del contenedor, así que
+  `seclab cloud connect`/`wait` llegan ahí, no al host. Para entrar al host
+  (diagnóstico, sin depender de Docker) usa `ssh -i <llave> ubuntu@<ip>`
+  directo al puerto 22 — sólo alcanzable mientras `cerrar_ssh_publico` sea
+  `false` (ver más abajo).
+- **Escritorio y code-server del contenedor** funcionan igual que en local:
+  `seclab init` genera `SECLAB_OCI_VNC_PASSWORD`/`SECLAB_OCI_CODE_PASSWORD`
+  en `.env` (mismo mecanismo que sus equivalentes locales, mismas reglas de
+  `es_secreto_inseguro`), y `sincronizar_tfvars_oracle_desde_env` los pasa a
+  Terraform. `terraform/oracle` ya no genera secretos por su cuenta
+  (`random_password`, descartado): `.env` es la fuente real, Terraform sólo
+  los lee y los inyecta al contenedor por `--env-file`.
+- **Escritorio del HOST (XFCE + xrdp), opt-in y aparte** del escritorio del
+  contenedor: `SECLAB_OCI_HABILITAR_ESCRITORIO_HOST=true` instala un
+  escritorio real en la VM Ubuntu misma (fuera de Docker), pensado para
+  configurar el host directamente, no para el trabajo normal de
+  laboratorio — instala paquetes reales y usa RAM/CPU de más. RDP exige una
+  contraseña real de sistema para `ubuntu` (`SECLAB_OCI_RDP_PASSWORD`,
+  también generada por `seclab init`); el puerto 3389 sigue la misma regla
+  de dos pasos que el SSH del host (`cerrar_ssh_publico`) y también se
+  publica por Tailscale.
+
+## Habilitar Tailscale sin quedarte fuera
+
+Activar Tailscale y cerrar el SSH público **no es un solo interruptor**: son
+dos variables deliberadamente separadas (`habilitar_tailscale` y
+`cerrar_ssh_publico`, ver `terraform/oracle/variables.tf`), precisamente
+porque si Tailscale no llegara a conectar, cerrar el SSH público en el mismo
+`apply` que lo activa dejaría la instancia inalcanzable sin ninguna forma de
+diagnosticar por qué.
+
+**Flujo correcto, en dos pasos:**
+
+1. `SECLAB_OCI_HABILITAR_TAILSCALE=true`, `SECLAB_OCI_CERRAR_SSH_PUBLICO=false`
+   (o sin declarar, el default). `seclab cloud up --provider oracle`. La
+   instancia queda con IP pública, SSH abierto en **dos** puertos — el 22
+   del host (vía de rescate, no depende de Docker) y `puerto_ssh`/2222 del
+   contenedor — y Tailscale corriendo en paralelo.
+2. Verifica que Tailscale conecta de verdad:
+   ```
+   ssh -i secretos/seclab_ed25519 -p 2222 seclab@<tailscale_hostname>
+   ```
+   (o el hostname que hayas puesto en `SECLAB_OCI_TAILSCALE_HOSTNAME`, MagicDNS
+   de tu tailnet). Si conecta, sólo entonces:
+3. `SECLAB_OCI_CERRAR_SSH_PUBLICO=true`, `seclab cloud plan/up --provider
+   oracle` de nuevo. Esto **no recrea la instancia**, sólo la red — pierde la
+   IP pública, cierra el SSH público, y la salida a Internet la sigue dando
+   un NAT Gateway. Si algo falla más adelante, revertir
+   (`cerrar_ssh_publico = false` y volver a aplicar) recupera el acceso
+   público sin reconstruir nada.
+
+**Configura tu auth key así para no repetir esto cada vez** (una sola vez,
+en la consola de Tailscale, no en este repositorio):
+
+1. En https://login.tailscale.com/admin/acls/file, descomenta y define un
+   tag:
+   ```json
+   "tagOwners": {
+       "tag:seclab": ["autogroup:admin"]
+   },
+   ```
+   Guarda. Esto es de una sola vez para tu tailnet — no hay que repetirlo por
+   despliegue.
+2. En https://login.tailscale.com/admin/settings/keys, genera una auth key
+   con **Reusable** activado y **Tags** → `tag:seclab` seleccionado. Sin el
+   tag, la key sigue siendo válida, pero cada nodo que se una con ella
+   heredará el vencimiento de "node key" por defecto de tu tailnet (~180
+   días en el plan gratuito) y tendrás que reautenticarlo manualmente pasado
+   ese plazo; con el tag, los nodos quedan exentos de ese vencimiento
+   automáticamente.
+3. Esa key (`Reusable` + `tag:seclab`) sirve para **todas** las próximas
+   recreaciones de la instancia sin generar una nueva — hasta que expire (máx.
+   90 días, límite del propio Tailscale, no configurable). Una key **sin**
+   `Reusable` se consume con el primer nodo que la usa: cualquier recreación
+   posterior de la instancia fallará con `invalid key` hasta que generes una
+   nueva.
 
 ## Referencia rápida de archivos
 

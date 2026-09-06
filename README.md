@@ -9,7 +9,7 @@ completar el curso.
 
 > **Versión 0.2.0 — Fase 2 de 13.**
 > El laboratorio arranca y se puede usar: imagen `lite`, acceso por SSH con
-> llave y ciclo de vida completo. Los perfiles `desktop`, `full` y `full-msf`,
+> llave y ciclo de vida completo. Los perfiles `full` y `full-msf`,
 > la VPN y el resto de módulos llegan en fases posteriores; los comandos que
 > aún no existen lo dicen y salen con código 3, en lugar de aparentar que
 > funcionan. Ver [CHANGELOG.md](CHANGELOG.md).

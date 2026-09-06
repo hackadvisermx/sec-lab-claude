@@ -1,22 +1,25 @@
 # Requisitos por perfil
 
-> Los cuatro perfiles están construidos y medidos en macOS arm64 con Docker
+> Los tres perfiles están construidos y medidos en macOS arm64 con Docker
 > 29.7. En amd64 los tamaños varían algo; los tiempos, bastante, según la red.
 
-| Perfil | Contenido | RAM mínima | Imagen (arm64) | Build desde cero |
+| Perfil | Contenido | RAM mínima | Disco mínimo | Imagen (arm64) |
 |---|---|---|---|---|
-| `lite` | Shell, red, recon básico, utilidades | 2 GB | 809 MB | ~3 min |
-| `desktop` | `lite` + XFCE, noVNC, code-server, Firefox | 4 GB | 2,9 GB | ~7 min |
-| `full` | `desktop` + web, AD, privesc, wordlists, CTF | 8 GB | 4,3 GB | ~10 min |
-| `full-msf` | `full` + Metasploit | 8 GB | 5,7 GB | ~15 min |
+| `lite` | Shell, red, recon básico, utilidades, XFCE, noVNC, code-server, ttyd, Firefox | 4 GB | ~10 GB | ≈ 3,0 GB |
+| `full` | `lite` + web, AD, privesc, wordlists, CTF y recon/pivoting adicional | 8 GB | ~25 GB | ≈ 7,4 GB |
+| `full-msf` | `full` + Metasploit | 8 GB | ~30 GB | ≈ 8,75 GB |
+
+`lite` pasó a requerir lo que antes pedía el perfil `desktop` (4 GB de RAM,
+~10 GB de disco) porque heredó su contenido: ya no existe un perfil "sólo
+terminal" más ligero que ése.
 
 El disco que hay que tener libre es más que el tamaño de la imagen: el build
-necesita espacio para las capas intermedias y para la caché. Cuenta el doble
-del tamaño final y no te quedarás corto.
+necesita espacio para las capas intermedias y para la caché. Los mínimos de la
+tabla ya cuentan ese margen.
 
 La RAM indicada es la que necesita el contenedor, no la de tu máquina. Súmale
 lo que consume tu sistema operativo y el navegador. En la práctica: con 8 GB de
-RAM total, `desktop` va bien y `full` va justo.
+RAM total, `lite` va bien y `full` va justo.
 
 Los tiempos de build son de la primera vez. Reconstruir tras un cambio en la
 configuración del curso tarda segundos, porque las capas de paquetes y de

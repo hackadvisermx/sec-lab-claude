@@ -105,7 +105,7 @@ Se rechazan explícitamente:
 Si un secreto no es válido, el arranque falla con un mensaje que dice qué
 regenerar. No hay degradación silenciosa.
 
-### El escritorio y code-server (perfil `desktop`)
+### El escritorio y code-server (todos los perfiles)
 
 Los servicios gráficos añaden dos superficies nuevas, y conviene saber
 exactamente qué protege cada cosa:

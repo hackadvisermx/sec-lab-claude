@@ -125,7 +125,8 @@ cloud_leer_argumentos() {
 sincronizar_tfvars_oracle_desde_env() {
     local tfvars="${CLOUD_DIR}/terraform.tfvars"
     local tenancy region compartment imagen owner ttl curso ssh_pub \
-          registry imagen_ref hab_ts ts_key ts_host shape
+          registry imagen_ref hab_ts ts_key ts_host shape ocpus memoria_gb cerrar_ssh hab_escritorio_host \
+          vnc_pass code_pass rdp_pass
 
     tenancy="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TENANCY_OCID)"
     region="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_REGION)"
@@ -136,6 +137,12 @@ sincronizar_tfvars_oracle_desde_env() {
     # si tu región no tiene capacidad ARM disponible — ver terraform/oracle/
     # README.md, "Si tu región no tiene capacidad ARM disponible".
     shape="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_SHAPE)"
+    # Vacío = default de variables.tf (2 OCPU / 12GB). Sólo hace falta
+    # tocarlos si un tamaño concreto no consigue capacidad en tu región (ver
+    # "Out of host capacity" en docs/troubleshooting.md) y quieres probar uno
+    # más pequeño con la misma forma.
+    ocpus="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_OCPUS)"
+    memoria_gb="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_MEMORIA_GB)"
     owner="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_OWNER)"
     ttl="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TTL)"
     curso="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_CURSO)"
@@ -145,6 +152,23 @@ sincronizar_tfvars_oracle_desde_env() {
     hab_ts="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_HABILITAR_TAILSCALE)"
     ts_key="$(leer_variable "$ARCHIVO_ENV" TAILSCALE_AUTH_KEY)"
     ts_host="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_TAILSCALE_HOSTNAME)"
+    # Segundo paso deliberadamente separado de hab_ts: ver
+    # cerrar_ssh_publico en terraform/oracle/variables.tf. Vacío/false =
+    # SSH público sigue abierto aunque Tailscale ya esté corriendo — el
+    # estado correcto mientras no hayas verificado que Tailscale conecta.
+    cerrar_ssh="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_CERRAR_SSH_PUBLICO)"
+    # Escritorio del HOST (XFCE + xrdp), opt-in explícito y aparte del
+    # escritorio del propio contenedor SecLab — ver
+    # habilitar_escritorio_host en terraform/oracle/variables.tf.
+    hab_escritorio_host="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_HABILITAR_ESCRITORIO_HOST)"
+    # Mismo generador que los secretos del contenedor local ('seclab init' /
+    # 'seclab init --regenerar-secretos', ver bin/seclab): estos tres viven en
+    # .env, no los genera Terraform. random_password ya no se usa en este
+    # módulo — un único mecanismo de generación sirve tanto al despliegue
+    # local como al remoto.
+    vnc_pass="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_VNC_PASSWORD)"
+    code_pass="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_CODE_PASSWORD)"
+    rdp_pass="$(leer_variable "$ARCHIVO_ENV" SECLAB_OCI_RDP_PASSWORD)"
 
     # Si ninguna variable de Oracle está puesta en .env, no se toca
     # terraform.tfvars: puede que el alumno lo esté manteniendo a mano
@@ -169,13 +193,24 @@ sincronizar_tfvars_oracle_desde_env() {
         if [ -n "$shape" ]; then
             printf 'shape               = "%s"\n' "$shape"
         fi
+        if [ -n "$ocpus" ]; then
+            printf 'ocpus               = %s\n' "$ocpus"
+        fi
+        if [ -n "$memoria_gb" ]; then
+            printf 'memoria_gb          = %s\n' "$memoria_gb"
+        fi
         printf 'ssh_public_key      = "%s"\n' "$ssh_pub"
+        printf 'vnc_password        = "%s"\n' "$vnc_pass"
+        printf 'code_password       = "%s"\n' "$code_pass"
+        printf 'rdp_password        = "%s"\n' "$rdp_pass"
+        printf 'habilitar_escritorio_host = %s\n' "$([ "$hab_escritorio_host" = "true" ] && echo true || echo false)"
         printf 'seclab_registry     = "%s"\n' "$registry"
         printf 'seclab_imagen_ref   = "%s"\n' "$imagen_ref"
         if [ "$hab_ts" = "true" ]; then
             printf 'habilitar_tailscale = true\n'
             printf 'tailscale_auth_key  = "%s"\n' "$ts_key"
             printf 'tailscale_hostname  = "%s"\n' "${ts_host:-seclab}"
+            printf 'cerrar_ssh_publico  = %s\n' "$([ "$cerrar_ssh" = "true" ] && echo true || echo false)"
         else
             printf 'habilitar_tailscale = false\n'
         fi
@@ -390,6 +425,7 @@ tabla_costes_oracle() {
   VM.Standard.A1.Flex (1/6GB)    1 OCPU, 6 GB    $0 si no excedes el total Always Free del tenancy
   VM.Standard.A1.Flex (2/12GB)   2 OCPU, 12 GB   $0 si no excedes el total Always Free del tenancy
   VM.Standard.A1.Flex (4/24GB)   4 OCPU, 24 GB   Límite superior típico del Always Free
+  VM.Standard.E4.Flex (2/12GB)   2 OCPU, 12 GB   ~$50 USD/mes aprox. — fallback x86, NO es Always Free
   VM.Standard3.Flex (de pago)    variable        ~$0.03 USD/OCPU-hora aprox. si excedes el free tier
 TABLA
 }
@@ -417,6 +453,9 @@ coste_aproximado_size() {
         e2-standard-4) printf '%s %s' 98 0.134 ;;
         VM.Standard.E2.1.Micro) printf '%s %s' 0 0 ;;
         VM.Standard.A1.Flex)    printf '%s %s' '0*' '0*' ;;
+        # Aproximado para 2 OCPU/8GB (SECLAB_OCI_OCPUS/MEMORIA_GB); ajusta a
+        # mano si usas otro tamaño: 2*0.025 + GB*0.0015 USD/hora.
+        VM.Standard.E4.Flex)    printf '%s %s' 45 0.062 ;;
         *) printf '%s %s' '?' '?' ;;
     esac
 }
@@ -524,7 +563,7 @@ cloud_up() {
     read -r mes hora <<< "$(coste_aproximado_size "$size")"
 
     aviso_coste_personal
-    titulo "Vas a crear infraestructura real en DigitalOcean"
+    titulo "Vas a crear infraestructura real en ${CLOUD_PROVEEDOR}"
     detalle "Proveedor:         ${CLOUD_PROVEEDOR}"
     detalle "Propietario:       ${CLOUD_OWNER}"
     detalle "Expira:            ${CLOUD_TTL}  (recuérdalo: no hay autodestrucción por defecto, ver docs/cloud.md)"
@@ -576,6 +615,23 @@ print(v)
 " 2>/dev/null
 }
 
+# cloud_destino_ssh -> host para conectar por SSH: la IP pública si la hay,
+# o si no, el nombre Tailscale (salida 'tailscale_hostname', hoy sólo la
+# expone el módulo de Oracle con habilitar_tailscale=true — una instancia sin
+# IP pública sólo es alcanzable así). Vacío si ninguna de las dos está.
+# Requiere que la propia máquina esté en la misma tailnet para resolver el
+# nombre por MagicDNS.
+cloud_destino_ssh() {
+    local ip host
+    ip="$(cloud_salida ip_publica)"
+    if [ -n "$ip" ]; then
+        printf '%s' "$ip"
+        return 0
+    fi
+    host="$(cloud_salida tailscale_hostname)"
+    [ -n "$host" ] && printf '%s' "$host"
+}
+
 cloud_status() {
     cloud_leer_argumentos "$@"
     exigir_terraform
@@ -583,13 +639,21 @@ cloud_status() {
     titulo "Estado — ${CLOUD_PROVEEDOR}"
     cloud_cargar_salidas
 
-    local ip owner fecha creado hoy
+    local ip host owner fecha creado hoy
     ip="$(cloud_salida ip_publica)"
+    host="$(cloud_salida tailscale_hostname)"
     owner="$(cloud_salida owner)"
     fecha="$(cloud_salida fecha_expiracion)"
     creado="$(cloud_salida creado_en)"
 
-    printf '  %-20s %s\n' "IP pública" "${ip:-?}" >&2
+    if [ -n "$ip" ]; then
+        printf '  %-20s %s\n' "IP pública" "$ip" >&2
+    elif [ -n "$host" ]; then
+        printf '  %-20s %s\n' "IP pública" "ninguna (Tailscale)" >&2
+        printf '  %-20s %s\n' "Nombre Tailscale" "$host" >&2
+    else
+        printf '  %-20s %s\n' "IP pública" "?" >&2
+    fi
     printf '  %-20s %s\n' "Propietario" "${owner:-?}" >&2
     printf '  %-20s %s\n' "Creado" "${creado:-?}" >&2
     printf '  %-20s %s\n' "Expira" "${fecha:-?}" >&2
@@ -624,11 +688,11 @@ cloud_wait() {
     cloud_cargar_salidas
 
     local ip puerto llave usuario transcurrido=0 intervalo=10
-    ip="$(cloud_salida ip_publica)"
+    ip="$(cloud_destino_ssh)"
     puerto="$(cloud_salida puerto_ssh)"
     usuario="$(usuario_ssh_cloud)"
     llave="$(localizar_llave_ssh)"
-    [ -z "$ip" ] && abortar "No hay IP pública en las salidas de Terraform." "" \
+    [ -z "$ip" ] && abortar "No hay IP pública ni nombre Tailscale en las salidas de Terraform." "" \
                             "¿Se completó 'seclab cloud up --provider ${CLOUD_PROVEEDOR}'?"
 
     titulo "Esperando el bootstrap de ${ip}:${puerto} (timeout ${timeout}s)"
@@ -658,11 +722,11 @@ cloud_connect() {
     cloud_cargar_salidas
 
     local ip puerto llave usuario
-    ip="$(cloud_salida ip_publica)"
+    ip="$(cloud_destino_ssh)"
     puerto="$(cloud_salida puerto_ssh)"
     usuario="$(usuario_ssh_cloud)"
     llave="$(localizar_llave_ssh)"
-    [ -z "$ip" ] && abortar "No hay IP pública en las salidas de Terraform." "" \
+    [ -z "$ip" ] && abortar "No hay IP pública ni nombre Tailscale en las salidas de Terraform." "" \
                             "¿Se completó 'seclab cloud up --provider ${CLOUD_PROVEEDOR}'?"
 
     titulo "Conectando a ${ip}:${puerto}"
@@ -711,7 +775,7 @@ cloud_destroy() {
 cloud_exportar_workspace_remoto() {
     cloud_cargar_salidas
     local ip puerto llave usuario destino archivo
-    ip="$(cloud_salida ip_publica)"
+    ip="$(cloud_destino_ssh)"
     puerto="$(cloud_salida puerto_ssh)"
     usuario="$(usuario_ssh_cloud)"
     llave="$(localizar_llave_ssh)"

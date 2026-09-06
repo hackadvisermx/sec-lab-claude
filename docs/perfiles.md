@@ -1,48 +1,52 @@
 # Perfiles y paquetes de herramientas
 
-> Estado: los cuatro perfiles están construidos y con smoke tests que pasan.
+> Estado: los tres perfiles están construidos y con smoke tests que pasan.
 > Los paquetes opt-in (`web`, `ad`, `pwn`, `forensics`, `cloud`, `mobile`)
 > llegan en la Fase 12: son conjuntos instalables sobre cualquier perfil.
 
 ## Perfiles de imagen
 
-Un perfil es una imagen completa. Eliges uno al arrancar.
+Un perfil es una imagen completa. Eliges uno al arrancar. Los tres incluyen
+desde `lite` el escritorio XFCE por navegador (noVNC), Firefox, code-server y
+un terminal por navegador (ttyd): no hay perfil "sin escritorio".
 
 | Perfil | Qué añade | Cuándo usarlo |
 |---|---|---|
-| `lite` ✅ | Shell, herramientas de red, recon básico | Trabajo diario contra HTB o TryHackMe desde tu terminal |
-| `desktop` ✅ | XFCE por navegador (noVNC), Firefox, code-server | Cuando necesitas interfaz gráfica: Burp, un navegador dentro del lab |
-| `full` ✅ | Web, AD, privesc, wordlists, CTF | Máquinas complejas y CTFs largos |
-| `full-msf` ✅ | Metasploit | Sólo si vas a usar Metasploit; pesa 1,4 GB más |
+| `lite` ✅ | Shell, red, recon básico, XFCE por navegador (noVNC), Firefox, code-server, terminal por navegador (ttyd) | Trabajo diario contra HTB o TryHackMe, con o sin interfaz gráfica |
+| `full` ✅ | `lite` más web, AD, privesc, wordlists, CTF y recon/pivoting adicional | Máquinas complejas y CTFs largos |
+| `full-msf` ✅ | `full` más Metasploit | Sólo si vas a usar Metasploit; pesa más |
 
 `full-msf` nunca es el predeterminado ni entra en la publicación por defecto:
 es opt-in explícito. Ver [requisitos.md](requisitos.md) para RAM y disco de
 cada uno.
 
-```bash
-./bin/seclab start --profile desktop
-```
-
 Cambiar de perfil no toca tu workspace ni tus secretos: son la misma
 instalación con otra imagen.
 
-## Los servicios del perfil `desktop`
+```bash
+./bin/seclab start --profile full
+```
+
+## Los servicios de escritorio y acceso web
 
 | Servicio | Dónde | Autenticación |
 |---|---|---|
 | Página de bienvenida | `http://127.0.0.1:8080` (`seclab open`) | ninguna: no muestra nada privado |
 | Escritorio XFCE | `http://127.0.0.1:6080/vnc.html` | contraseña de VNC (`SECLAB_VNC_PASSWORD`) |
 | code-server | `http://127.0.0.1:8443` | contraseña (`SECLAB_CODE_PASSWORD`) |
+| Terminal (ttyd) | `http://127.0.0.1:7681` | usuario/contraseña (`SECLAB_TERMINAL_PASSWORD`) |
 
-Los tres se publican **sólo en 127.0.0.1**, y sus puertos no se publican
-siquiera en el perfil `lite`, donde esos servicios no existen. El servidor VNC
-en sí (puerto 5901) no se publica nunca: sólo noVNC llega a él, desde dentro
-del contenedor.
+Los cuatro se publican **sólo en 127.0.0.1**, en los tres perfiles por igual:
+ya no hay un perfil donde estos puertos no existan. El servidor VNC en sí
+(puerto 5901) no se publica nunca: sólo noVNC llega a él, desde dentro del
+contenedor.
 
-Los servicios se activan según el perfil. Si quieres el perfil `desktop` sin
-escritorio —por ejemplo para usar sólo code-server— pon `SECLAB_HABILITAR_DESKTOP=false`
-en `.env`. Y si activas un servicio en un perfil que no lo trae, el laboratorio
-**no arranca** y te dice qué perfil usar, en lugar de quedarse a medias.
+Los servicios se activan por defecto en los tres perfiles. Si quieres
+prescindir de alguno —por ejemplo, sólo code-server sin escritorio gráfico—
+pon `SECLAB_HABILITAR_DESKTOP=false` en `.env`. Y si activas un servicio en un
+perfil que no lo trae (por ejemplo, a mano con un `SECLAB_PERFIL` mal escrito),
+el laboratorio **no arranca** y te dice qué perfil usar, en lugar de quedarse
+a medias.
 
 ### Qué te encuentras al entrar por el escritorio
 
@@ -88,8 +92,10 @@ tener que reconstruir una imagen distinta.
 | `forensics` | Volatility 3, YARA, Sleuth Kit, tshark, esteganografía |
 | `cloud` | kubectl, Helm, Trivy, Syft/Grype, auditoría cloud |
 | `mobile` | apktool, JADX, adb |
-| `desktop` | XFCE, navegador, noVNC, code-server |
 | `msf` | Metasploit y dependencias |
+
+No hay paquete `desktop`: XFCE, noVNC, code-server y ttyd ya vienen en los
+tres perfiles desde `lite`, así que no hace falta instalarlos aparte.
 
 Cada paquete trae su cheatsheet en `docs/cheatsheets/`. Los ejemplos usan los
 targets de laboratorio incluidos, porque son reproducibles para toda la clase.
@@ -108,6 +114,9 @@ El manifiesto se genera durante el build, no se escribe a mano: dice lo que
 realmente quedó instalado. Si un paquete de la lista no aparece instalado, el
 build se detiene, porque un manifiesto que miente no sirve de nada.
 
+`lite` añade además `eza` y `bat` (reemplazos modernos de `ls` y `cat`, ambos
+paquetes de apt).
+
 `nikto` no está en `lite`, y en `full` no es el de Ubuntu: el paquete de la
 distribución es la versión 2.1.5 y la actual es la 2.6.1 —cinco años de firmas
 de diferencia en un escáner de vulnerabilidades web—. En `full` se instala de
@@ -120,6 +129,35 @@ general está en [politica-herramientas.md](politica-herramientas.md).
 gobuster, nikto, wfuzz, hydra), Active Directory (impacket, smbclient, smbmap,
 krb5, ldap-utils), escalada (linPEAS, winPEAS, pspy), análisis (radare2, gdb,
 pwntools, binwalk, exiftool) y un subconjunto de SecLists.
+
+A eso se suman 13 herramientas nuevas, todas de su publicación oficial con
+versión fijada y checksum verificado (ver
+[politica-herramientas.md](politica-herramientas.md)):
+
+- Recon HTTP: `subfinder` (2.16.0), `nuclei` (3.11.1), `httpx-toolkit`
+  (1.11.0) — el trío de ProjectDiscovery. Se instala como `httpx-toolkit`, no
+  como `httpx`: el cliente HTTP de Python del mismo nombre (dependencia
+  transitiva de `netexec` y `pwncat-cs`) instala un script llamado `httpx` en
+  la misma ruta y se comería el binario de Go sin avisar. Kali empaqueta el
+  mismo binario con el mismo nombre por el mismo motivo.
+- Enumeración y fuzzing: `feroxbuster` (2.13.1), `rustscan` (2.4.1).
+- Pivoting: `chisel` (1.12.0), `ligolo-ng` (0.9.1, sólo el componente proxy).
+- Active Directory: `enum4linux-ng` (1.3.10), `netexec` (1.5.1).
+- Pwn/forense: `pwndbg` (2026.07.29 — plugin de gdb, no un binario suelto: se
+  carga solo al ejecutar `gdb`, que fuente `/opt/seclab/pwndbg/gdbinit.py`),
+  `one_gadget` (2.1.1, gem de RubyGems).
+- Web: OWASP ZAP (2.17.0).
+- Shells: `pwncat-cs` (0.5.4, paquete de PyPI).
+
+Dos candidatas se evaluaron y se descartaron a propósito:
+
+- **exploitdb/searchsploit**: su repositorio oficial
+  (`offensive-security/exploitdb`) está archivado en GitHub desde el
+  10-11-2022 —congelado, justo lo contrario de lo que necesita una base de
+  exploits para servir de algo—. Descartada.
+- **Burp Suite Community**: PortSwigger no publica checksum oficial de su
+  descarga. OWASP ZAP, que sí lo tiene, cubre el mismo caso de uso de proxy
+  web.
 
 Las wordlists son un **subconjunto** deliberado —`common.txt`,
 `raft-medium-directories.txt`, subdominios, usuarios y rockyou—, no SecLists

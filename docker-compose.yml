@@ -68,14 +68,16 @@ services:
       # terminales sin Nerd Font. Lo activa `seclab doctor` tras preguntar.
       SECLAB_GLIFOS: ${SECLAB_GLIFOS:-powerline}
 
-      # Servicios opcionales. Vacío significa «según el perfil»: el perfil
-      # `desktop` trae escritorio, code-server y página de bienvenida sin que
-      # haya que activar tres variables a mano, y `lite` no trae ninguno.
+      # Servicios opcionales. Vacío significa «según el perfil»: los tres
+      # perfiles (lite, full, full-msf) traen escritorio, code-server,
+      # terminal web y página de bienvenida activados por defecto —
+      # 'lite' fusiona lo que antes era un perfil 'desktop' aparte.
       # Con true o false manda quien lo escribe.
       SECLAB_HABILITAR_DESKTOP: ${SECLAB_HABILITAR_DESKTOP-}
       SECLAB_HABILITAR_CODE: ${SECLAB_HABILITAR_CODE-}
       SECLAB_HABILITAR_WEB: ${SECLAB_HABILITAR_WEB-}
       SECLAB_HABILITAR_JUPYTER: ${SECLAB_HABILITAR_JUPYTER-}
+      SECLAB_HABILITAR_TERMINAL: ${SECLAB_HABILITAR_TERMINAL-}
 
       # Resolución del escritorio. La ve el navegador a través de noVNC, así
       # que conviene que quepa en la pantalla del alumno.
@@ -87,19 +89,29 @@ services:
       SECLAB_PUERTO_NOVNC: ${SECLAB_PUERTO_NOVNC:-6080}
       SECLAB_PUERTO_CODE: ${SECLAB_PUERTO_CODE:-8443}
       SECLAB_PUERTO_JUPYTER: ${SECLAB_PUERTO_JUPYTER:-8888}
+      SECLAB_PUERTO_TERMINAL: ${SECLAB_PUERTO_TERMINAL:-7681}
       # Llave pública del alumno. Sin ella el contenedor aborta el arranque:
       # el acceso por contraseña está deshabilitado y no hay alternativa.
       SECLAB_SSH_PUBKEY: ${SECLAB_SSH_PUBKEY:-}
       SECLAB_VNC_PASSWORD: ${SECLAB_VNC_PASSWORD:-}
       SECLAB_CODE_PASSWORD: ${SECLAB_CODE_PASSWORD:-}
       SECLAB_JUPYTER_TOKEN: ${SECLAB_JUPYTER_TOKEN:-}
+      SECLAB_TERMINAL_PASSWORD: ${SECLAB_TERMINAL_PASSWORD:-}
 
-    # Sólo se publica lo que existe. Los puertos del escritorio, code-server y
-    # la página de bienvenida los añade docker-compose.desktop.yml, que el CLI
-    # aplica únicamente cuando el perfil los trae: un puerto publicado sin nada
-    # detrás es una promesa incumplida y, además, ocupa el puerto.
+    # Los tres perfiles traen escritorio, code-server, terminal web y página
+    # de bienvenida: no hace falta un override aparte para publicarlos, todos
+    # los perfiles los usan.
     ports:
       - "${SECLAB_BIND:-127.0.0.1}:${SECLAB_PUERTO_SSH:-2222}:22"
+      # Escritorio XFCE en el navegador (noVNC → Xvnc en el 5901 interno, que
+      # no se publica: sólo websockify llega a él).
+      - "${SECLAB_BIND:-127.0.0.1}:${SECLAB_PUERTO_NOVNC:-6080}:6080"
+      # code-server sobre /workspace.
+      - "${SECLAB_BIND:-127.0.0.1}:${SECLAB_PUERTO_CODE:-8443}:8443"
+      # Página de bienvenida: la que abre `seclab open`.
+      - "${SECLAB_BIND:-127.0.0.1}:${SECLAB_PUERTO_WEB:-8080}:8080"
+      # Terminal por navegador (ttyd), mismo zsh que da SSH.
+      - "${SECLAB_BIND:-127.0.0.1}:${SECLAB_PUERTO_TERMINAL:-7681}:7681"
 
     volumes:
       - seclab-home:/home/${SECLAB_USUARIO:-seclab}

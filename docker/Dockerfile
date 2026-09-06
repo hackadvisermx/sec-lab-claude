@@ -6,8 +6,15 @@
 # confundan entre sí:
 #
 #   base  → dependencias comunes, usuario y locale
-#   lite  → shell, red, recon básico y acceso SSH      (Fase 2)
-#   desktop, full, full-msf                            (Fase 5)
+#   lite  → shell, red, recon básico, escritorio XFCE y acceso SSH (Fase 2/5)
+#   full, full-msf                                     (Fase 5/12)
+#
+# A petición explícita del dueño del proyecto (sesión posterior a las Fases
+# 2/5): los antiguos perfiles `lite` y `desktop` se fusionaron en uno solo.
+# Ya no existe un perfil "sin escritorio" — todo despliegue trae XFCE,
+# code-server, ttyd y noVNC desde el nivel más básico. `full`/`full-msf` ya
+# no significan "con escritorio", sólo "con más herramientas ofensivas". El
+# nombre que sobrevive es `lite`, no `desktop`.
 #
 # Soporta linux/amd64 y linux/arm64. La imagen base se ancla por el digest de
 # su lista de manifiestos, de modo que cada arquitectura resuelve dentro del
@@ -61,8 +68,17 @@ RUN set -eux; \
 # -----------------------------------------------------------------------------
 FROM base AS lite
 # -----------------------------------------------------------------------------
+# `lite` = shell, red, recon básico, acceso SSH y escritorio XFCE por
+# navegador (noVNC) + code-server + terminal web (ttyd) + Firefox. Fusiona lo
+# que antes eran dos perfiles separados: no hay ganancia real en mantener un
+# perfil sin escritorio cuando el peso adicional (XFCE ligero, sin Burp ni
+# wordlists) es pequeño frente a la comodidad de tenerlo siempre disponible.
+#
+# Ningún servicio de esta etapa se publica fuera de 127.0.0.1, y ninguno
+# arranca si su secreto no está configurado.
 
 ARG SECLAB_USUARIO=seclab
+ARG TARGETARCH
 
 # La lista se conserva dentro de la imagen: el manifiesto de herramientas la
 # lee más abajo, y sirve de referencia para saber qué se pidió instalar.
@@ -172,17 +188,6 @@ RUN set -eux; \
     test -r /opt/seclab/shell/tmux/.tmux.conf; \
     chmod -R go-w /opt/seclab/shell
 
-# Lo que se ha instalado por la vía 2 queda registrado para el manifiesto: es
-# el único momento en que se conoce la versión exacta que quedó dentro.
-RUN set -eux; \
-    { \
-      echo "oh-my-zsh|${OMZ_COMMIT}|commit fijado, checksum verificado"; \
-      echo "zsh-autosuggestions|${ZSH_AUTOSUGGESTIONS_REF}|checksum verificado"; \
-      echo "zsh-syntax-highlighting|${ZSH_HIGHLIGHTING_REF}|checksum verificado"; \
-      echo "oh-my-tmux|${OH_MY_TMUX_COMMIT}|commit fijado, checksum verificado"; \
-    } > /opt/seclab/herramientas-fijadas.txt; \
-    chmod 0644 /opt/seclab/herramientas-fijadas.txt
-
 # Configuración propia: la del curso, versionada en el repositorio.
 COPY docker/shell/zshrc /opt/seclab/shell/zshrc
 COPY docker/shell/ejemplos.txt /opt/seclab/shell/ejemplos.txt
@@ -238,82 +243,6 @@ RUN chmod 0755 /usr/local/bin/seclab-entrypoint \
                 /usr/local/bin/seclab-salud \
                 /usr/local/bin/seclab-manifiesto
 
-# --- Manifiesto de herramientas --------------------------------------------
-# Se genera aquí, en el build, porque es el único momento en que se conocen las
-# versiones que realmente quedaron instaladas.
-ARG TARGETARCH
-RUN set -eux; \
-    SECLAB_PERFIL=lite \
-    TARGETARCH="${TARGETARCH}" \
-    SECLAB_LISTA_PAQUETES=/opt/seclab/paquetes-lite.txt \
-        /usr/local/bin/seclab-manifiesto > /opt/seclab/manifiesto-herramientas.txt; \
-    cat /opt/seclab/manifiesto-herramientas.txt
-
-# --- Metadatos --------------------------------------------------------------
-ARG SECLAB_VERSION=0.0.0
-ARG SECLAB_COMMIT=desconocido
-ARG SECLAB_FECHA=desconocida
-ARG UBUNTU_DIGEST
-
-ENV SECLAB_VERSION="${SECLAB_VERSION}" \
-    SECLAB_PERFIL="lite"
-
-# El digest de la imagen base, también como archivo: las etiquetas OCI sólo se
-# pueden leer desde el host, y el entrypoint necesita este dato dentro del
-# contenedor para marcar con qué base se creó el volumen del directorio
-# personal. Sin esa marca no hay forma de detectar un home que arrastra restos
-# de otra base (ver `seclab doctor`).
-RUN printf '%s\n' "${UBUNTU_DIGEST}" > /opt/seclab/base-digest; \
-    chmod 0644 /opt/seclab/base-digest; \
-    test -s /opt/seclab/base-digest
-
-LABEL org.opencontainers.image.title="SecLab lite" \
-      org.opencontainers.image.description="Laboratorio de ciberseguridad reproducible — perfil lite" \
-      org.opencontainers.image.version="${SECLAB_VERSION}" \
-      org.opencontainers.image.revision="${SECLAB_COMMIT}" \
-      org.opencontainers.image.created="${SECLAB_FECHA}" \
-      org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.base.name="ubuntu:26.04" \
-      org.opencontainers.image.base.digest="${UBUNTU_DIGEST}" \
-      dev.seclab.perfil="lite" \
-      dev.seclab.arquitectura="${TARGETARCH}" \
-      dev.seclab.manifiesto="/opt/seclab/manifiesto-herramientas.txt"
-
-ENV SECLAB_PERFIL=lite \
-    SECLAB_USUARIO=${SECLAB_USUARIO}
-
-WORKDIR /workspace
-
-HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
-    CMD /usr/local/bin/seclab-salud
-
-ENTRYPOINT ["/usr/local/bin/seclab-entrypoint"]
-CMD ["dormir"]
-
-# -----------------------------------------------------------------------------
-FROM lite AS desktop
-# -----------------------------------------------------------------------------
-# `desktop` = `lite` + escritorio XFCE por navegador (noVNC) + code-server +
-# Firefox. Existe para lo que no se puede hacer en una terminal: Burp Suite, un
-# navegador dentro del laboratorio, ver una captura de Wireshark. Todo lo demás
-# se sigue haciendo mejor por SSH, y por eso `lite` no desaparece.
-#
-# Ningún servicio de esta etapa se publica fuera de 127.0.0.1, y ninguno arranca
-# si su secreto no está configurado.
-
-ARG SECLAB_USUARIO=seclab
-ARG TARGETARCH
-
-COPY docker/paquetes-desktop.txt /opt/seclab/paquetes-desktop.txt
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    set -eux; \
-    apt-get update; \
-    grep -vE '^\s*(#|$)' /opt/seclab/paquetes-desktop.txt | xargs \
-        apt-get install --yes --no-install-recommends; \
-    rm -rf /var/log/apt/*
-
 # --- code-server -------------------------------------------------------------
 # No está en el repositorio de Ubuntu. Se instala el .deb oficial de la versión
 # fijada, con el checksum comprobado antes de tocar dpkg. Un checksum por
@@ -341,6 +270,34 @@ RUN set -eux; \
     apt-get install --yes --no-install-recommends /tmp/code-server.deb; \
     rm -f /tmp/code-server.deb; \
     code-server --version
+
+# --- ttyd (terminal por navegador) --------------------------------------------
+# Tampoco está en el repositorio de Ubuntu. Binario oficial estático (sin
+# dependencias de tiempo de ejecución), versión fijada y checksum comprobado
+# antes de instalarlo — mismo criterio que code-server arriba. Un checksum
+# por arquitectura: son binarios distintos.
+ARG TTYD_VERSION=1.7.7
+ARG TTYD_SHA256_AMD64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+ARG TTYD_SHA256_ARM64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) esperado="${TTYD_SHA256_AMD64}"; arch="x86_64" ;; \
+        arm64) esperado="${TTYD_SHA256_ARM64}"; arch="aarch64" ;; \
+        *) echo "ERROR: arquitectura sin checksum fijado: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${arch}"; \
+    curl -fsSL --connect-timeout 20 --retry 5 --retry-delay 3 --retry-all-errors \
+        -o /usr/local/bin/ttyd "$url"; \
+    real="$(sha256sum /usr/local/bin/ttyd | cut -d' ' -f1)"; \
+    if [ "$real" != "$esperado" ]; then \
+        echo "ERROR: checksum incorrecto para ${url}" >&2; \
+        echo "  esperado: ${esperado}" >&2; \
+        echo "  obtenido: ${real}" >&2; \
+        exit 1; \
+    fi; \
+    chmod 0755 /usr/local/bin/ttyd; \
+    ttyd --version
 
 # --- Firefox ESR -------------------------------------------------------------
 # Los paquetes `firefox` y `chromium-browser` de Ubuntu son transiciones a snap,
@@ -449,51 +406,80 @@ RUN set -eux; \
     test -r /usr/share/applications/firefox.desktop; \
     update-desktop-database /usr/share/applications 2>/dev/null || true
 
-# --- Manifiesto y metadatos del perfil --------------------------------------
+# --- Manifiesto de herramientas --------------------------------------------
+# Se genera aquí, en el build, porque es el único momento en que se conocen las
+# versiones que realmente quedaron instaladas.
+ARG TARGETARCH
 RUN set -eux; \
     { \
-      cat /opt/seclab/herramientas-fijadas.txt; \
+      echo "oh-my-zsh|${OMZ_COMMIT}|commit fijado, checksum verificado"; \
+      echo "zsh-autosuggestions|${ZSH_AUTOSUGGESTIONS_REF}|checksum verificado"; \
+      echo "zsh-syntax-highlighting|${ZSH_HIGHLIGHTING_REF}|checksum verificado"; \
+      echo "oh-my-tmux|${OH_MY_TMUX_COMMIT}|commit fijado, checksum verificado"; \
       echo "code-server|${CODE_SERVER_VERSION}|.deb oficial, checksum verificado"; \
+      echo "ttyd|${TTYD_VERSION}|binario oficial estático, checksum verificado"; \
       echo "firefox|${FIREFOX_VERSION}|tarball oficial de Mozilla, checksum verificado"; \
       echo "JetBrainsMono Nerd Font|${NERD_FONT_VERSION}|checksum verificado"; \
-    } > /tmp/fijadas.txt; \
-    mv /tmp/fijadas.txt /opt/seclab/herramientas-fijadas.txt; \
+    } > /opt/seclab/herramientas-fijadas.txt; \
     chmod 0644 /opt/seclab/herramientas-fijadas.txt; \
-    SECLAB_PERFIL=desktop \
+    SECLAB_PERFIL=lite \
     TARGETARCH="${TARGETARCH}" \
-    SECLAB_LISTA_PAQUETES="/opt/seclab/paquetes-lite.txt /opt/seclab/paquetes-desktop.txt" \
+    SECLAB_LISTA_PAQUETES=/opt/seclab/paquetes-lite.txt \
         /usr/local/bin/seclab-manifiesto > /opt/seclab/manifiesto-herramientas.txt; \
-    tail -20 /opt/seclab/manifiesto-herramientas.txt
+    cat /opt/seclab/manifiesto-herramientas.txt
 
+# --- Metadatos --------------------------------------------------------------
 ARG SECLAB_VERSION=0.0.0
 ARG SECLAB_COMMIT=desconocido
 ARG SECLAB_FECHA=desconocida
 ARG UBUNTU_DIGEST
 
-LABEL org.opencontainers.image.title="SecLab desktop" \
-      org.opencontainers.image.description="Laboratorio de ciberseguridad reproducible — perfil desktop" \
+ENV SECLAB_VERSION="${SECLAB_VERSION}" \
+    SECLAB_PERFIL="lite"
+
+# El digest de la imagen base, también como archivo: las etiquetas OCI sólo se
+# pueden leer desde el host, y el entrypoint necesita este dato dentro del
+# contenedor para marcar con qué base se creó el volumen del directorio
+# personal. Sin esa marca no hay forma de detectar un home que arrastra restos
+# de otra base (ver `seclab doctor`).
+RUN printf '%s\n' "${UBUNTU_DIGEST}" > /opt/seclab/base-digest; \
+    chmod 0644 /opt/seclab/base-digest; \
+    test -s /opt/seclab/base-digest
+
+LABEL org.opencontainers.image.title="SecLab lite" \
+      org.opencontainers.image.description="Laboratorio de ciberseguridad reproducible — perfil lite (con escritorio XFCE)" \
       org.opencontainers.image.version="${SECLAB_VERSION}" \
       org.opencontainers.image.revision="${SECLAB_COMMIT}" \
       org.opencontainers.image.created="${SECLAB_FECHA}" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.base.name="ubuntu:26.04" \
       org.opencontainers.image.base.digest="${UBUNTU_DIGEST}" \
-      dev.seclab.perfil="desktop" \
+      dev.seclab.perfil="lite" \
       dev.seclab.arquitectura="${TARGETARCH}" \
       dev.seclab.manifiesto="/opt/seclab/manifiesto-herramientas.txt"
 
-ENV SECLAB_PERFIL=desktop
+ENV SECLAB_PERFIL=lite \
+    SECLAB_USUARIO=${SECLAB_USUARIO}
+
+WORKDIR /workspace
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD /usr/local/bin/seclab-salud
+
+ENTRYPOINT ["/usr/local/bin/seclab-entrypoint"]
+CMD ["dormir"]
 
 # -----------------------------------------------------------------------------
-FROM desktop AS full
+FROM lite AS full
 # -----------------------------------------------------------------------------
-# `full` = `desktop` + web, Active Directory, escalada de privilegios,
-# wordlists y utilidades de CTF. Es el perfil para máquinas complejas y CTFs
-# largos, y el que más pesa: pide 8 GB de RAM y 25 GB de disco.
+# `full` = `lite` + web, Active Directory, escalada de privilegios, wordlists,
+# recon/fuzzing, pivoting y utilidades de CTF. Es el perfil para máquinas
+# complejas y CTFs largos, y el que más pesa: pide 8 GB de RAM y 25 GB de
+# disco.
 #
-# Los paquetes opt-in de la Fase 12 (`forensics`, `cloud`, `mobile`, `pwn`
-# completo) no están aquí: llegan como paquetes instalables sobre cualquier
-# perfil, sin reconstruir la imagen.
+# Los paquetes opt-in de la Fase 12 (`web`, `ad`, `pwn` completo) no están
+# aquí: llegan como paquetes instalables sobre cualquier perfil, sin
+# reconstruir la imagen.
 
 ARG SECLAB_USUARIO=seclab
 ARG TARGETARCH
@@ -506,7 +492,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update; \
     grep -vE '^\s*(#|$)' /opt/seclab/paquetes-full.txt | xargs \
         apt-get install --yes --no-install-recommends; \
-    rm -rf /var/log/apt/*
+    rm -rf /var/log/apt/*; \
+    # El paquete 'bat' de Ubuntu instala el binario como 'batcat' (choca con
+    # otro paquete de nombre 'bat' ya existente en Debian/Ubuntu). Se enlaza
+    # al nombre esperado para no sorprender a quien ya conoce la herramienta.
+    ln -sf /usr/bin/batcat /usr/local/bin/bat
 
 # --- nikto -------------------------------------------------------------------
 # El paquete de Ubuntu es la versión 2.1.5 y la actual es la 2.6.1: cinco años
@@ -594,6 +584,326 @@ RUN set -eux; \
         /opt/seclab/wordlists/passwords/rockyou.txt.tar.gz "${SL_ROCKYOU_SHA256}"; \
     du -sh /opt/seclab/wordlists
 
+# --- Recon/fuzzing: ProjectDiscovery (subfinder, nuclei, httpx) --------------
+# Binarios Go oficiales de GitHub releases, sin apt disponible en Ubuntu. Cada
+# release publica un archivo de checksums propio (*_checksums.txt); los
+# valores de aquí se tomaron de ahí, un checksum por arquitectura.
+#
+# El binario de ProjectDiscovery se llama 'httpx' dentro de su propio zip,
+# pero ese mismo nombre lo usa también el paquete de PyPI 'httpx' (cliente
+# HTTP en Python, dependencia transitiva de netexec y pwncat-cs más abajo):
+# su script de consola se instala en la misma ruta /usr/local/bin/httpx y
+# sobrescribe el binario de Go sin avisar (comprobado construyendo la imagen
+# de verdad: tras instalar netexec, 'httpx -version' pasó a ser el cliente
+# HTTP de Python). Kali empaqueta la herramienta de ProjectDiscovery como
+# 'httpx-toolkit' precisamente por este choque de nombres; aquí se hace lo
+# mismo, sin depender del orden en que se instale cada cosa.
+ARG SUBFINDER_VERSION=2.16.0
+ARG SUBFINDER_SHA256_AMD64=1b7f9c608e9a5bd59e609a5e09710d63c5485e92d3d49dc2c16eb4fdbe10cb60
+ARG SUBFINDER_SHA256_ARM64=c81d49559c0f630177be9e347e502e7a3d474aacc6ff78291ffcb4964367d63d
+ARG NUCLEI_VERSION=3.11.1
+ARG NUCLEI_SHA256_AMD64=ea63d4ae232808cd7c6bc00d0142428e231fab59dae01042246097d195835ab6
+ARG NUCLEI_SHA256_ARM64=8044e3d9768ba0a744b2872c1a87e813006f013da97ca9f50f7661a4203bec07
+ARG HTTPX_VERSION=1.11.0
+ARG HTTPX_SHA256_AMD64=5dce96e7315cff24be7aab3b032f23f7a71b7711a17f8189ebe601f2588f2f87
+ARG HTTPX_SHA256_ARM64=2b5d9ec3d3750df41e04e4216b1400d2ad862d1cb9ebe68ae501b2299cb5b3a5
+
+RUN set -eux; \
+    instalar_zip_pd() { \
+        nombre="$1"; version="$2"; esperado="$3"; binario="$4"; instalado="${5:-$4}"; \
+        url="https://github.com/projectdiscovery/${nombre}/releases/download/v${version}/${nombre}_${version}_linux_${TARGETARCH}.zip"; \
+        curl -fsSL --connect-timeout 20 --retry 5 --retry-delay 3 --retry-all-errors \
+            -o /tmp/pd.zip "$url"; \
+        real="$(sha256sum /tmp/pd.zip | cut -d' ' -f1)"; \
+        if [ "$real" != "$esperado" ]; then \
+            echo "ERROR: checksum incorrecto para ${url}" >&2; \
+            echo "  esperado: ${esperado}" >&2; \
+            echo "  obtenido: ${real}" >&2; \
+            exit 1; \
+        fi; \
+        unzip -oq /tmp/pd.zip -d /tmp/pd_extraido "$binario"; \
+        install -m 0755 "/tmp/pd_extraido/${binario}" "/usr/local/bin/${instalado}"; \
+        rm -rf /tmp/pd.zip /tmp/pd_extraido; \
+    }; \
+    case "${TARGETARCH}" in \
+        amd64) sf="${SUBFINDER_SHA256_AMD64}"; nc="${NUCLEI_SHA256_AMD64}"; hx="${HTTPX_SHA256_AMD64}" ;; \
+        arm64) sf="${SUBFINDER_SHA256_ARM64}"; nc="${NUCLEI_SHA256_ARM64}"; hx="${HTTPX_SHA256_ARM64}" ;; \
+        *) echo "ERROR: arquitectura sin checksum fijado: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    instalar_zip_pd subfinder "${SUBFINDER_VERSION}" "$sf" subfinder; \
+    instalar_zip_pd nuclei "${NUCLEI_VERSION}" "$nc" nuclei; \
+    instalar_zip_pd httpx "${HTTPX_VERSION}" "$hx" httpx httpx-toolkit; \
+    subfinder -version; nuclei -version; httpx-toolkit -version
+
+# --- Recon/fuzzing: feroxbuster y rustscan -----------------------------------
+# Igual que arriba (binarios Go/Rust de GitHub release, sin apt), pero de
+# repositorios distintos y con su propio empaquetado por arquitectura: ambos
+# publican un .zip, y el de rustscan para amd64 envuelve además un .tar.gz
+# (arm64 no). Se maneja cada caso explícitamente en vez de asumir que los dos
+# se empaquetan igual.
+ARG FEROXBUSTER_VERSION=2.13.1
+ARG FEROXBUSTER_SHA256_AMD64=0978619a10049ccaad290b2d1241bc4d8a6aac18da07d6231186fb9d343f99de
+ARG FEROXBUSTER_SHA256_ARM64=1e5244e1f52e55a647b65e0c76ae7afe0b9983c1fbea30ed7c67e477175eb381
+ARG RUSTSCAN_VERSION=2.4.1
+ARG RUSTSCAN_SHA256_AMD64=f3a4365d939e3b81f25ba8c37852ce9ac9e938c3cc882c5b3e6fff6152c740be
+ARG RUSTSCAN_SHA256_ARM64=4f49103e2dfc9e9709a36da2cd61f1f81613f8d0a203307f750439fc3ce39eae
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) fx_arch="x86_64"; fx_esperado="${FEROXBUSTER_SHA256_AMD64}"; \
+               rs_url="https://github.com/RustScan/RustScan/releases/download/${RUSTSCAN_VERSION}/x86_64-linux-rustscan.tar.gz.zip"; \
+               rs_esperado="${RUSTSCAN_SHA256_AMD64}"; rs_anidado=1 ;; \
+        arm64) fx_arch="aarch64"; fx_esperado="${FEROXBUSTER_SHA256_ARM64}"; \
+               rs_url="https://github.com/RustScan/RustScan/releases/download/${RUSTSCAN_VERSION}/aarch64-linux-rustscan.zip"; \
+               rs_esperado="${RUSTSCAN_SHA256_ARM64}"; rs_anidado=0 ;; \
+        *) echo "ERROR: arquitectura sin checksum fijado: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    fx_url="https://github.com/epi052/feroxbuster/releases/download/v${FEROXBUSTER_VERSION}/${fx_arch}-linux-feroxbuster.zip"; \
+    curl -fsSL --connect-timeout 20 --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/ferox.zip "$fx_url"; \
+    real="$(sha256sum /tmp/ferox.zip | cut -d' ' -f1)"; \
+    if [ "$real" != "$fx_esperado" ]; then \
+        echo "ERROR: checksum incorrecto para ${fx_url}" >&2; exit 1; \
+    fi; \
+    unzip -oq /tmp/ferox.zip -d /tmp/ferox_extraido; \
+    install -m 0755 /tmp/ferox_extraido/feroxbuster /usr/local/bin/feroxbuster; \
+    rm -rf /tmp/ferox.zip /tmp/ferox_extraido; \
+    curl -fsSL --connect-timeout 20 --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/rustscan.zip "$rs_url"; \
+    real="$(sha256sum /tmp/rustscan.zip | cut -d' ' -f1)"; \
+    if [ "$real" != "$rs_esperado" ]; then \
+        echo "ERROR: checksum incorrecto para ${rs_url}" >&2; exit 1; \
+    fi; \
+    unzip -oq /tmp/rustscan.zip -d /tmp/rustscan_extraido; \
+    if [ "$rs_anidado" = "1" ]; then \
+        tar -xzf /tmp/rustscan_extraido/x86_64-linux-rustscan.tar.gz -C /tmp/rustscan_extraido; \
+    fi; \
+    install -m 0755 /tmp/rustscan_extraido/rustscan /usr/local/bin/rustscan; \
+    rm -rf /tmp/rustscan.zip /tmp/rustscan_extraido; \
+    feroxbuster --version; rustscan --version
+
+# --- Pivoting: chisel y ligolo-ng ---------------------------------------------
+# Binarios Go de GitHub release. chisel publica un .gz de un solo binario;
+# ligolo-ng publica un .tar.gz con el binario ya nombrado "proxy" — se
+# reinstala como 'ligolo-proxy' para no dejar un comando genérico en el PATH.
+# Sólo el lado "proxy" (el que corre en la máquina del alumno): el lado
+# "agent" se compila/descarga aparte para cada objetivo, nunca se ejecuta
+# aquí.
+ARG CHISEL_VERSION=1.12.0
+ARG CHISEL_SHA256_AMD64=f3f180f1d93aa72cce4e6386f98cc06569a0146fbd65eb4423cf83e6434bcfe6
+ARG CHISEL_SHA256_ARM64=2ec6152cd2c74fe0146d4d79e4e7aa174521368c56e433d55e023a92ea404ec3
+ARG LIGOLO_VERSION=0.9.1
+ARG LIGOLO_SHA256_AMD64=4e4486a492c24f32ff5f965d230e08388c81b86d07b1af28c5f54df615731503
+ARG LIGOLO_SHA256_ARM64=a7bce7ce036decf5375e0c9022ab453614a3f24a94792c12b367f2a6bc4e9560
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) ch_esperado="${CHISEL_SHA256_AMD64}"; li_esperado="${LIGOLO_SHA256_AMD64}" ;; \
+        arm64) ch_esperado="${CHISEL_SHA256_ARM64}"; li_esperado="${LIGOLO_SHA256_ARM64}" ;; \
+        *) echo "ERROR: arquitectura sin checksum fijado: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    ch_url="https://github.com/jpillora/chisel/releases/download/v${CHISEL_VERSION}/chisel_${CHISEL_VERSION}_linux_${TARGETARCH}.gz"; \
+    curl -fsSL --connect-timeout 20 --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/chisel.gz "$ch_url"; \
+    real="$(sha256sum /tmp/chisel.gz | cut -d' ' -f1)"; \
+    if [ "$real" != "$ch_esperado" ]; then \
+        echo "ERROR: checksum incorrecto para ${ch_url}" >&2; exit 1; \
+    fi; \
+    gunzip -c /tmp/chisel.gz > /usr/local/bin/chisel; \
+    chmod 0755 /usr/local/bin/chisel; \
+    rm -f /tmp/chisel.gz; \
+    li_url="https://github.com/nicocha30/ligolo-ng/releases/download/v${LIGOLO_VERSION}/ligolo-ng_proxy_${LIGOLO_VERSION}_linux_${TARGETARCH}.tar.gz"; \
+    curl -fsSL --connect-timeout 20 --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/ligolo.tar.gz "$li_url"; \
+    real="$(sha256sum /tmp/ligolo.tar.gz | cut -d' ' -f1)"; \
+    if [ "$real" != "$li_esperado" ]; then \
+        echo "ERROR: checksum incorrecto para ${li_url}" >&2; exit 1; \
+    fi; \
+    install -d -m 0755 /tmp/ligolo_extraido; \
+    tar -xzf /tmp/ligolo.tar.gz -C /tmp/ligolo_extraido; \
+    install -m 0755 /tmp/ligolo_extraido/proxy /usr/local/bin/ligolo-proxy; \
+    rm -rf /tmp/ligolo.tar.gz /tmp/ligolo_extraido; \
+    chisel --version; ligolo-proxy -h >/dev/null
+
+# --- AD/Windows: enum4linux-ng ------------------------------------------------
+# Script Python, no un paquete de Ubuntu. Sus dependencias (impacket, ldap3,
+# PyYAML) ya están instaladas más arriba en esta misma etapa (python3-impacket,
+# python3-ldap3, python3-yaml). Fijado por tag y checksum, igual que nikto.
+ARG ENUM4LINUX_NG_VERSION=1.3.10
+ARG ENUM4LINUX_NG_SHA256=563235acd56278dbcc405e436d78cf29eaa55dc83b11b6c38d46077198f6a427
+
+RUN set -eux; \
+    seclab-descargar \
+        "https://codeload.github.com/cddmp/enum4linux-ng/tar.gz/refs/tags/v${ENUM4LINUX_NG_VERSION}" \
+        /tmp/e4lng.tar.gz "${ENUM4LINUX_NG_SHA256}"; \
+    install -d -m 0755 /opt/seclab/enum4linux-ng; \
+    tar -xzf /tmp/e4lng.tar.gz -C /opt/seclab/enum4linux-ng --strip-components=1; \
+    rm -f /tmp/e4lng.tar.gz; \
+    chmod 0755 /opt/seclab/enum4linux-ng/enum4linux-ng.py; \
+    ln -sf /opt/seclab/enum4linux-ng/enum4linux-ng.py /usr/local/bin/enum4linux-ng; \
+    enum4linux-ng -h >/dev/null
+
+# --- Pwn/forense: pwndbg -------------------------------------------------------
+# Plugin de gdb. Su propio instalador oficial (./setup.sh dentro del repo) es
+# lo que se ejecuta aquí, pero NUNCA a ciegas: el repo entero ya pasó por
+# verificación de checksum (es la vía 2 de la política de herramientas), así
+# que ejecutar un script QUE YA ESTÁ DENTRO de ese tarball verificado no es
+# distinto de ejecutar cualquier otro binario fijado — no hay una segunda
+# descarga sin verificar de por medio.
+#
+# jpype1 (una de sus dependencias Python, para integración con Java) compila
+# una extensión en C++: hace falta g++ sólo durante el `setup.sh`. Se instala
+# y se quita en el mismo RUN, para no dejar un compilador en la imagen final
+# (ver TESTING_GAPS.md, "multi-stage para no enviar el compilador").
+ARG PWNDBG_VERSION=2026.07.29
+ARG PWNDBG_COMMIT=f4de22244b7e9f0aeda26a92208c42edaca2f8d8
+ARG PWNDBG_SHA256=f9f8153feba73e5d4af384c55001cb6759eaca8490f3b869be016b1f0385d7be
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    apt-get update; \
+    apt-get install --yes --no-install-recommends g++; \
+    seclab-descargar \
+        "https://codeload.github.com/pwndbg/pwndbg/tar.gz/${PWNDBG_COMMIT}" \
+        /tmp/pwndbg.tar.gz "${PWNDBG_SHA256}"; \
+    install -d -m 0755 /opt/seclab/pwndbg; \
+    tar -xzf /tmp/pwndbg.tar.gz -C /opt/seclab/pwndbg --strip-components=1; \
+    rm -f /tmp/pwndbg.tar.gz; \
+    (cd /opt/seclab/pwndbg && ./setup.sh); \
+    apt-get purge --yes g++; \
+    apt-get autoremove --yes; \
+    rm -rf /var/log/apt/*
+
+# --- AD/Windows: netexec -------------------------------------------------------
+# No está en PyPI (decisión propia del proyecto, según su documentación
+# oficial, que recomienda 'pipx install git+...'): el tarball fijado por
+# commit y con checksum verificado es el mismo código exacto, sin depender
+# de que GitHub esté disponible en cada build.
+#
+# Dos particularidades reales de esta instalación, encontradas construyendo
+# la imagen de verdad (no supuestas):
+#   1. netexec usa poetry-dynamic-versioning, que necesita un repositorio git
+#      de verdad para saber su propia versión — un tarball sin `.git` no le
+#      basta. POETRY_DYNAMIC_VERSIONING_BYPASS se lo da a mano, con la misma
+#      versión que ya se fijó arriba.
+#   2. Dos dependencias transitivas (arc4, aardwolf) no tienen wheel
+#      precompilada para Python 3.14 (muy reciente) y se compilan desde
+#      código: hacen falta gcc y, sólo para aardwolf, Rust. Se instalan y se
+#      quitan en el mismo RUN, igual que g++ en el bloque de pwndbg de
+#      arriba — no quedan en la imagen final.
+#   3. Una dependencia de netexec (certipy-ad) apunta a su vez a
+#      github.com/Pennyw0rth/Certipy SIN versión fijada — así lo declara el
+#      propio netexec, no una decisión de este Dockerfile. Se documenta aquí
+#      en vez de ocultarlo: es la única pieza de esta imagen que no se
+#      instala por completo con versión inmutable.
+#   4. Entre las decenas de dependencias transitivas hay paquetes que
+#      apt YA instaló (typing_extensions, entre otros): pip se niega a
+#      reinstalarlos por encima sin un registro RECORD que sólo tienen los
+#      paquetes que el propio pip instaló. `--ignore-installed` evita el
+#      conflicto instalando la versión que netexec necesita en el entorno de
+#      pip, sin tocar el paquete de apt.
+#   5. `netexec --version` termina con código de salida 1 aunque imprima la
+#      versión correctamente (comprobado con `echo $?` fuera de este
+#      Dockerfile): es el propio binario, no un fallo de instalación. Bajo
+#      `set -e` eso cortaba el RUN justo ahí, antes de purgar gcc/rustc/
+#      cargo/python3-dev — se le añade `|| true` porque aquí sólo sirve de
+#      humo (confirmar que el binario arranca), no de condición de éxito.
+ARG NETEXEC_VERSION=1.5.1
+ARG NETEXEC_COMMIT=c7dc286ba65daf10402cdc470e531b84e6d3d911
+ARG NETEXEC_SHA256=e6b19598554792dffb32ae9da888439e77d9af7824c3b2bd97f8182cd73b13c7
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    apt-get update; \
+    apt-get install --yes --no-install-recommends gcc rustc cargo python3-dev; \
+    seclab-descargar \
+        "https://codeload.github.com/Pennyw0rth/NetExec/tar.gz/${NETEXEC_COMMIT}" \
+        /tmp/netexec.tar.gz "${NETEXEC_SHA256}"; \
+    install -d -m 0755 /tmp/netexec_src; \
+    tar -xzf /tmp/netexec.tar.gz -C /tmp/netexec_src --strip-components=1; \
+    rm -f /tmp/netexec.tar.gz; \
+    POETRY_DYNAMIC_VERSIONING_BYPASS="${NETEXEC_VERSION}" \
+        pip3 install --no-cache-dir --ignore-installed /tmp/netexec_src; \
+    rm -rf /tmp/netexec_src; \
+    netexec --version || true; \
+    apt-get purge --yes gcc rustc cargo python3-dev; \
+    apt-get autoremove --yes; \
+    rm -rf /var/log/apt/*
+
+# --- Web: OWASP ZAP -------------------------------------------------------------
+# Tarball oficial, checksum verificado. Aplicación Java: el mismo archivo
+# sirve para amd64 y arm64 (no hay checksum por arquitectura). Requiere
+# default-jre-headless (ya en paquetes-full.txt). Se evaluó Burp Suite
+# Community como alternativa/complemento, pero PortSwigger no publica ningún
+# checksum oficial verificable — se descartó a propósito, no por omisión.
+ARG ZAP_VERSION=2.17.0
+ARG ZAP_SHA256=efe799aaa3627db683b43f00c9c210aea0b75c00cc8f0a0f0434d12bb3ddde5a
+
+RUN set -eux; \
+    seclab-descargar \
+        "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Linux.tar.gz" \
+        /tmp/zap.tar.gz "${ZAP_SHA256}"; \
+    install -d -m 0755 /opt/zaproxy; \
+    tar -xzf /tmp/zap.tar.gz -C /opt/zaproxy --strip-components=1; \
+    rm -f /tmp/zap.tar.gz; \
+    printf '#!/bin/sh\nexec /opt/zaproxy/zap.sh "$@"\n' > /usr/local/bin/zap; \
+    chmod 0755 /usr/local/bin/zap
+
+# --- Shells: pwncat-cs ---------------------------------------------------------
+# Paquete de PyPI, versión fijada. La integridad la da el propio índice de
+# PyPI (hash por archivo, verificado por pip): no es el mismo mecanismo que un
+# checksum calculado a mano, pero es el estándar del ecosistema Python y el
+# mismo criterio de "versión fijada, nunca latest".
+#
+# Su dependencia transitiva 'netifaces' tampoco tiene wheel precompilada para
+# Python 3.14 y se compila desde código: mismo patrón que arc4/aardwolf en el
+# bloque de netexec de arriba — gcc y python3-dev (Python.h) se instalan y se
+# quitan en el mismo RUN.
+#
+# pwncat-cs 0.5.4 exige 'packaging<21.0', una versión que en Python 3.14
+# depende de 'distutils' (retirado del intérprete). apt ya trae 'packaging'
+# 26.0 sin registro RECORD, así que ni `--ignore-installed` es seguro aquí:
+# forzarlo hace que pip también reinstale 'setuptools' en una versión más
+# nueva que ya no trae el módulo 'distutils' de compatibilidad, rompiendo el
+# propio 'packaging' viejo en tiempo de ejecución (comprobado). La solución
+# real: instalar pwncat-cs con `--no-deps` (pip nunca toca 'packaging', se
+# queda con el 26.0 de apt, que es funcionalmente compatible) y declarar a
+# mano el resto de sus dependencias exactas (ver requires_dist en PyPI),
+# fijando además 'setuptools<81' — a partir de la 81, setuptools deja de
+# traer 'pkg_resources', que 'zodburi' (dependencia de pwncat-cs) todavía
+# importa.
+ARG PWNCAT_CS_VERSION=0.5.4
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    apt-get update; \
+    apt-get install --yes --no-install-recommends gcc python3-dev; \
+    pip3 install --no-cache-dir --no-deps "pwncat-cs==${PWNCAT_CS_VERSION}"; \
+    pip3 install --no-cache-dir \
+        "setuptools<81" \
+        "netifaces>=0.11.0,<0.12.0" \
+        "prompt-toolkit>=3.0.19,<4.0.0" \
+        "pycryptodome>=3.10.1,<4.0.0" \
+        "requests>=2.25.1,<3.0.0" \
+        "rich>=10.4.0,<11.0.0" \
+        "python-rapidjson>=1.0,<2.0" \
+        "ZODB3>=3.11.0,<4.0.0" \
+        "zodburi>=2.5.0,<3.0.0" \
+        "Jinja2>=3.0.1,<4.0.0" \
+        "paramiko-ng>=2.8.8,<3.0.0" \
+        "PyNaCl>=1.4.0,<2.0.0"; \
+    pwncat-cs --help >/dev/null; \
+    apt-get purge --yes gcc python3-dev; \
+    apt-get autoremove --yes; \
+    rm -rf /var/log/apt/*
+
+# --- Pwn/forense: one_gadget ----------------------------------------------------
+# Gem de Ruby, versión fijada (ruby/ruby-dev ya están en paquetes-full.txt).
+ARG ONE_GADGET_VERSION=2.1.1
+
+RUN set -eux; \
+    gem install --no-document one_gadget -v "${ONE_GADGET_VERSION}"; \
+    one_gadget --version
+
 # --- Guardián de capacidades -------------------------------------------------
 RUN /usr/local/bin/seclab-capacidades /opt/seclab/capacidades-full.txt
 
@@ -610,14 +920,27 @@ RUN set -eux; \
         echo "pspy|no instalado|sin binario para ${TARGETARCH}"; \
       fi; \
       echo "SecLists (subconjunto)|${SECLISTS_VERSION}|5 listas fijadas por checksum"; \
+      echo "subfinder|${SUBFINDER_VERSION}|release oficial, checksum verificado"; \
+      echo "nuclei|${NUCLEI_VERSION}|release oficial, checksum verificado"; \
+      echo "httpx-toolkit|${HTTPX_VERSION}|release oficial, checksum verificado (nombre 'httpx-toolkit': el paquete de PyPI 'httpx' usa el nombre 'httpx')"; \
+      echo "feroxbuster|${FEROXBUSTER_VERSION}|release oficial, checksum verificado"; \
+      echo "rustscan|${RUSTSCAN_VERSION}|release oficial, checksum verificado"; \
+      echo "chisel|${CHISEL_VERSION}|release oficial, checksum verificado"; \
+      echo "ligolo-ng (proxy)|${LIGOLO_VERSION}|release oficial, checksum verificado"; \
+      echo "enum4linux-ng|${ENUM4LINUX_NG_VERSION}|tarball oficial, checksum verificado"; \
+      echo "pwndbg|${PWNDBG_VERSION}|commit fijado, checksum verificado"; \
+      echo "netexec|${NETEXEC_VERSION}|commit fijado, checksum verificado"; \
+      echo "OWASP ZAP|${ZAP_VERSION}|tarball oficial, checksum verificado"; \
+      echo "pwncat-cs|${PWNCAT_CS_VERSION}|paquete de PyPI, versión fijada"; \
+      echo "one_gadget|${ONE_GADGET_VERSION}|gem de RubyGems, versión fijada"; \
     } > /tmp/fijadas.txt; \
     mv /tmp/fijadas.txt /opt/seclab/herramientas-fijadas.txt; \
     chmod 0644 /opt/seclab/herramientas-fijadas.txt; \
     SECLAB_PERFIL=full \
     TARGETARCH="${TARGETARCH}" \
-    SECLAB_LISTA_PAQUETES="/opt/seclab/paquetes-lite.txt /opt/seclab/paquetes-desktop.txt /opt/seclab/paquetes-full.txt" \
+    SECLAB_LISTA_PAQUETES="/opt/seclab/paquetes-lite.txt /opt/seclab/paquetes-full.txt" \
         /usr/local/bin/seclab-manifiesto > /opt/seclab/manifiesto-herramientas.txt; \
-    tail -15 /opt/seclab/manifiesto-herramientas.txt
+    tail -20 /opt/seclab/manifiesto-herramientas.txt
 
 ARG SECLAB_VERSION=0.0.0
 ARG SECLAB_COMMIT=desconocido
@@ -689,7 +1012,7 @@ RUN set -eux; \
     chmod 0644 /opt/seclab/herramientas-fijadas.txt; \
     SECLAB_PERFIL=full-msf \
     TARGETARCH="${TARGETARCH}" \
-    SECLAB_LISTA_PAQUETES="/opt/seclab/paquetes-lite.txt /opt/seclab/paquetes-desktop.txt /opt/seclab/paquetes-full.txt" \
+    SECLAB_LISTA_PAQUETES="/opt/seclab/paquetes-lite.txt /opt/seclab/paquetes-full.txt" \
         /usr/local/bin/seclab-manifiesto > /opt/seclab/manifiesto-herramientas.txt; \
     tail -5 /opt/seclab/manifiesto-herramientas.txt
 

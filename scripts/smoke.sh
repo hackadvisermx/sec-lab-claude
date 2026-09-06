@@ -208,41 +208,42 @@ done
 [ "$fugas" -eq 0 ] && pasa "ningún secreto de .env aparece en las salidas públicas"
 
 # --- 5. Servicios del escritorio --------------------------------------------
-if perfil_con_escritorio "$PERFIL"; then
-    titulo "5. Escritorio, code-server y página de bienvenida"
+# Los tres perfiles (lite, full, full-msf) traen escritorio, code-server,
+# terminal web y página de bienvenida activados por defecto.
+titulo "5. Escritorio, code-server y página de bienvenida"
 
-    for servicio in escritorio code web; do
-        if servicio_activo "$servicio"; then
-            pasa "el contenedor declara el servicio '${servicio}'"
-        else
-            falla "el contenedor declara el servicio '${servicio}'" \
-                  "aparece en /run/seclab/servicios"
-        fi
-    done
-
-    puerto_web="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_WEB)"
-    puerto_novnc="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_NOVNC)"
-    puerto_code="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_CODE)"
-
-    comprobar "la página de bienvenida responde" "HTTP 200 en el ${puerto_web:-8080}" \
-        codigo_esperado "http://${BIND}:${puerto_web:-8080}/" "200"
-    comprobar "noVNC sirve vnc.html" "HTTP 200 en el ${puerto_novnc:-6080}" \
-        codigo_esperado "http://${BIND}:${puerto_novnc:-6080}/vnc.html" "200"
-    comprobar "code-server responde" "HTTP 200 o 302 en el ${puerto_code:-8443}" \
-        codigo_esperado "http://${BIND}:${puerto_code:-8443}/" "200 302"
-
-    # Autenticación: una contraseña incorrecta no puede dar acceso.
-    respuesta="$(curl -sS --max-time 10 -X POST \
-        -d "password=contrasena-incorrecta-de-smoke-test" \
-        "http://${BIND}:${puerto_code:-8443}/login" 2>/dev/null)"
-    if printf '%s' "$respuesta" | grep -qiE "incorrect|error"; then
-        pasa "code-server rechaza una contraseña incorrecta"
+for servicio in escritorio code web; do
+    if servicio_activo "$servicio"; then
+        pasa "el contenedor declara el servicio '${servicio}'"
     else
-        falla "code-server rechaza una contraseña incorrecta" "página de login con error"
+        falla "el contenedor declara el servicio '${servicio}'" \
+              "aparece en /run/seclab/servicios"
     fi
+done
 
-    # El servidor X con VNC: tiene que exigir contraseña y no estar publicado.
-    if en_lab python3 -c '
+puerto_web="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_WEB)"
+puerto_novnc="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_NOVNC)"
+puerto_code="$(leer_variable "$ARCHIVO_ENV" SECLAB_PUERTO_CODE)"
+
+comprobar "la página de bienvenida responde" "HTTP 200 en el ${puerto_web:-8080}" \
+    codigo_esperado "http://${BIND}:${puerto_web:-8080}/" "200"
+comprobar "noVNC sirve vnc.html" "HTTP 200 en el ${puerto_novnc:-6080}" \
+    codigo_esperado "http://${BIND}:${puerto_novnc:-6080}/vnc.html" "200"
+comprobar "code-server responde" "HTTP 200 o 302 en el ${puerto_code:-8443}" \
+    codigo_esperado "http://${BIND}:${puerto_code:-8443}/" "200 302"
+
+# Autenticación: una contraseña incorrecta no puede dar acceso.
+respuesta="$(curl -sS --max-time 10 -X POST \
+    -d "password=contrasena-incorrecta-de-smoke-test" \
+    "http://${BIND}:${puerto_code:-8443}/login" 2>/dev/null)"
+if printf '%s' "$respuesta" | grep -qiE "incorrect|error"; then
+    pasa "code-server rechaza una contraseña incorrecta"
+else
+    falla "code-server rechaza una contraseña incorrecta" "página de login con error"
+fi
+
+# El servidor X con VNC: tiene que exigir contraseña y no estar publicado.
+if en_lab python3 -c '
 import socket, sys
 s = socket.create_connection(("127.0.0.1", 5901), 5)
 version = s.recv(12)
@@ -252,43 +253,42 @@ tipos = list(s.recv(n)) if n else []
 # 1 = None (sin contraseña), 2 = VncAuth
 sys.exit(0 if (2 in tipos and 1 not in tipos) else 1)
 ' >/dev/null 2>&1; then
-        pasa "Xvnc exige contraseña y no ofrece acceso sin autenticación"
-    else
-        falla "Xvnc exige contraseña y no ofrece acceso sin autenticación" \
-              "sólo el tipo de seguridad VncAuth"
-    fi
-
-    if curl -sS --max-time 3 "http://${BIND}:5901/" >/dev/null 2>&1; then
-        falla "el puerto 5901 no está publicado en el host" "sólo accesible dentro del contenedor"
-    else
-        pasa "el puerto 5901 de VNC no está publicado en el host"
-    fi
-
-    # La sesión de escritorio: que haya gestor de ventanas y panel significa
-    # que XFCE arrancó de verdad, no sólo que el servidor X está vivo.
-    ventanas="$(como_usuario env DISPLAY=:1 xwininfo -root -children 2>/dev/null)"
-    for componente in xfwm4 xfce4-panel xfdesktop; do
-        if printf '%s' "$ventanas" | grep -qi "$componente"; then
-            pasa "la sesión XFCE tiene ${componente}"
-        else
-            falla "la sesión XFCE tiene ${componente}" "ventana presente en el display :1"
-        fi
-    done
-
-    resolucion="$(como_usuario env DISPLAY=:1 xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')"
-    if [ -n "$resolucion" ]; then
-        pasa "el display :1 responde a ${resolucion}"
-    else
-        falla "el display :1 responde" "xdpyinfo devuelve las dimensiones"
-    fi
-
-    comprobar "Firefox está instalado y arranca" "firefox --version sale con 0" \
-        como_usuario firefox --version
-    comprobar "code-server está instalado" "code-server --version sale con 0" \
-        como_usuario code-server --version
-    comprobar "la Nerd Font está en la imagen" "fc-list encuentra JetBrainsMono Nerd Font" \
-        en_lab sh -c 'fc-list | grep -q "JetBrainsMono Nerd Font"'
+    pasa "Xvnc exige contraseña y no ofrece acceso sin autenticación"
+else
+    falla "Xvnc exige contraseña y no ofrece acceso sin autenticación" \
+          "sólo el tipo de seguridad VncAuth"
 fi
+
+if curl -sS --max-time 3 "http://${BIND}:5901/" >/dev/null 2>&1; then
+    falla "el puerto 5901 no está publicado en el host" "sólo accesible dentro del contenedor"
+else
+    pasa "el puerto 5901 de VNC no está publicado en el host"
+fi
+
+# La sesión de escritorio: que haya gestor de ventanas y panel significa
+# que XFCE arrancó de verdad, no sólo que el servidor X está vivo.
+ventanas="$(como_usuario env DISPLAY=:1 xwininfo -root -children 2>/dev/null)"
+for componente in xfwm4 xfce4-panel xfdesktop; do
+    if printf '%s' "$ventanas" | grep -qi "$componente"; then
+        pasa "la sesión XFCE tiene ${componente}"
+    else
+        falla "la sesión XFCE tiene ${componente}" "ventana presente en el display :1"
+    fi
+done
+
+resolucion="$(como_usuario env DISPLAY=:1 xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')"
+if [ -n "$resolucion" ]; then
+    pasa "el display :1 responde a ${resolucion}"
+else
+    falla "el display :1 responde" "xdpyinfo devuelve las dimensiones"
+fi
+
+comprobar "Firefox está instalado y arranca" "firefox --version sale con 0" \
+    como_usuario firefox --version
+comprobar "code-server está instalado" "code-server --version sale con 0" \
+    como_usuario code-server --version
+comprobar "la Nerd Font está en la imagen" "fc-list encuentra JetBrainsMono Nerd Font" \
+    en_lab sh -c 'fc-list | grep -q "JetBrainsMono Nerd Font"'
 
 # --- 6. Herramientas del perfil full ----------------------------------------
 perfil_con_full() {

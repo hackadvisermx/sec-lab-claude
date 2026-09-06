@@ -9,6 +9,234 @@ proyecto usa [versionado semántico](https://semver.org/lang/es/).
 
 Fases 3, 4, 5, 6, 7, 8, 9, 10 y 11 entregadas.
 
+### Cambiado — El perfil `desktop` se fusiona en `lite`: quedan tres perfiles
+
+De cuatro perfiles (`lite`, `desktop`, `full`, `full-msf`) se pasa a tres.
+Todo el contenido de `desktop` —XFCE, noVNC, code-server, ttyd, Firefox,
+Nerd Font— se movió a `lite`, que ahora es la base con escritorio incluido:
+ya no existe un perfil "sólo terminal" más ligero. `full` sigue significando
+"`lite` más herramientas ofensivas adicionales" y `full-msf` sigue siendo
+"`full` más Metasploit", sin cambios de significado en esos dos.
+
+Como consecuencia: `docker-bake.hcl` pierde los targets `desktop` y
+`desktop-multiarch`; `docker-compose.desktop.yml` se elimina y sus cuatro
+mapeos de puerto (6080 noVNC, 8443 code-server, 8080 bienvenida, 7681 ttyd)
+pasan directamente y sin condición al `docker-compose.yml` base, porque los
+tres perfiles los usan por igual; `lib/plataforma.sh` (`requisitos_perfil()`)
+ajusta `lite` a los requisitos que antes tenía `desktop` (4 GB de RAM,
+~10 GB de disco), porque heredó su contenido. `.github/workflows/ci.yml` y
+`publicar.yml` pasan de construir/publicar `[lite, desktop, full]` a
+`[lite, full]` (`full-msf` ya estaba fuera de la matriz de CI desde antes;
+sin cambios ahí). Tamaños reales construidos hoy en arm64: `lite` ≈ 3,0 GB,
+`full` ≈ 7,4 GB, `full-msf` ≈ 8,75 GB.
+
+Toda la documentación (`docs/perfiles.md`, `docs/requisitos.md`,
+`docs/arquitectura.md`, `docs/politica-herramientas.md`,
+`docs/inicio-rapido.md`, `docs/troubleshooting.md`, `docs/ci.md`,
+`README.md`, `SECURITY.md`) se actualizó para reflejar los tres perfiles.
+
+### Añadido — 13 herramientas nuevas en `full`
+
+Todas de su publicación oficial, versión fijada y checksum verificado, sin
+`curl | sh` en ningún caso (misma política que el resto del proyecto, ver
+`docs/politica-herramientas.md`):
+
+- **Recon HTTP** (trío de ProjectDiscovery): `subfinder` 2.16.0, `nuclei`
+  3.11.1, `httpx-toolkit` 1.11.0.
+- **Enumeración/fuzzing**: `feroxbuster` 2.13.1, `rustscan` 2.4.1.
+- **Pivoting**: `chisel` 1.12.0, `ligolo-ng` 0.9.1 (sólo el componente proxy).
+- **Active Directory**: `enum4linux-ng` 1.3.10, `netexec` 1.5.1.
+- **Pwn/forense**: `pwndbg` 2026.07.29 (plugin de gdb, no un binario suelto:
+  se carga al ejecutar `gdb`, que fuente `/opt/seclab/pwndbg/gdbinit.py`),
+  `one_gadget` 2.1.1 (gem de RubyGems).
+- **Web**: OWASP ZAP 2.17.0.
+- **Shells**: `pwncat-cs` 0.5.4 (paquete de PyPI).
+
+**Renombrado deliberado: `httpx` → `httpx-toolkit`.** El binario de Go de
+ProjectDiscovery se instala como `httpx-toolkit`, no `httpx`, porque el
+cliente HTTP de Python del mismo nombre (`httpx`, dependencia transitiva de
+`netexec` y `pwncat-cs` vía pip) instala un script de consola literalmente
+llamado `httpx` en la misma ruta, y sobrescribiría el binario de Go sin
+avisar. Kali empaqueta la misma herramienta con el mismo nombre
+(`httpx-toolkit`) por idéntico motivo. Cualquier referencia a `httpx` como
+herramienta de recon en esta documentación pasa a decir `httpx-toolkit`.
+
+`lite` gana además `eza` y `bat` (reemplazos modernos de `ls`/`cat`, ambos
+paquetes de apt).
+
+### Descartado — exploitdb/searchsploit y Burp Suite Community
+
+Dos candidatas evaluadas para `full` y excluidas, con motivo documentado en
+vez de simplemente omitidas:
+
+- **exploitdb/searchsploit**: su repositorio oficial
+  (`offensive-security/exploitdb`) está archivado en GitHub desde el
+  10-11-2022. Congelado, contradice el propósito mismo de una base de
+  exploits, que necesita mantenerse al día.
+- **Burp Suite Community**: PortSwigger no publica un checksum oficial de su
+  descarga, así que no cumple la condición innegociable de verificar antes
+  de instalar. OWASP ZAP, que sí publica checksum verificable, cubre el
+  mismo caso de uso de proxy web y se instaló en su lugar.
+
+### Corregido durante la instalación de las herramientas nuevas
+
+Problemas reales encontrados al construir la imagen con las 13 herramientas
+de arriba, no anticipados al escribir el Dockerfile:
+
+- **`netexec` necesita `POETRY_DYNAMIC_VERSIONING_BYPASS`.** Su build usa
+  `poetry-dynamic-versioning`, que exige un repositorio Git real para
+  resolver la versión; dentro de un `RUN` de Docker no lo hay. Se fija esa
+  variable de entorno sólo para ese paso.
+- **Toolchains de compilación temporales, instalados y purgados en la misma
+  capa.** `netexec` y `pwncat-cs` arrastran dependencias transitivas de
+  Python sin *wheel* precompilado para Python 3.14 todavía (`arc4`,
+  `aardwolf`, `netifaces`): hace falta compilarlas. `gcc`, `rustc`, `cargo`
+  y `python3-dev` se instalan, se usan y se purgan dentro del mismo `RUN`,
+  para no dejar un toolchain de compilación completo en la imagen final.
+- **Conflictos apt-contra-pip en `typing_extensions` y `packaging`.** Los
+  paquetes de apt no dejan el `RECORD` que pip espera para saber qué hay
+  instalado, así que pip se niega a tocar esas rutas. Se resolvió con
+  `--ignore-installed`/`--no-deps` según el caso.
+- **`pwncat-cs` fija `packaging<21.0`, incompatible con Python 3.14** (que
+  quitó `distutils`, del que dependen versiones antiguas de `packaging`). Se
+  instaló con `--no-deps` y sus otras dependencias explícitas, dejando
+  deliberadamente intacto el `packaging` más nuevo de apt, más
+  `setuptools<81` fijado aparte porque la 81 quitó `pkg_resources`, que
+  `zodburi` (dependencia de `pwncat-cs`) todavía necesita.
+- **`netexec --version` sale con código 1 aunque imprime la versión
+  correctamente.** Es una rareza real de ese CLI, no algo que corresponda
+  arreglar en `netexec`. Se rodea con `|| true` en el paso de build del
+  Dockerfile, no en el propio binario.
+
+### Añadido — Fase 5, terminal por navegador (ttyd)
+
+Nuevo servicio del perfil `desktop` (y `full`/`full-msf`, que lo heredan):
+un terminal por navegador, el mismo `zsh` que ya da SSH, sobre `ttyd`
+(binario oficial estático, versión 1.7.7, checksum verificado por
+arquitectura, mismo patrón que code-server). Sigue el mismo diseño que el
+resto de servicios opcionales:
+
+- `SECLAB_HABILITAR_TERMINAL` (vacío = según perfil, activado en
+  `desktop`/`full`/`full-msf`), `SECLAB_PUERTO_TERMINAL` (7681 por defecto),
+  `SECLAB_TERMINAL_PASSWORD` (secreto, lo genera `seclab init`, mínimo 16
+  caracteres — misma validación que los otros tres secretos).
+- Publicado sólo en `127.0.0.1` (`docker-compose.desktop.yml`), igual que
+  escritorio/code-server/bienvenida.
+- Healthcheck (`docker/salud.sh`): sin credenciales, ttyd responde 401 —
+  esa es la respuesta correcta de un servicio sano y protegido, igual que el
+  302 de code-server.
+- Enlace en la página de bienvenida y entrada en el manifiesto de
+  herramientas fijadas.
+- `tailscale serve` (ver la entrada de abajo) también lo publica
+  automáticamente, tanto en local como en Oracle Cloud.
+
+**Verificado con un build y un `docker run` reales** (no sólo `hadolint`/
+`shellcheck`): `ttyd` instala y arranca bien en `arm64`, responde `401` sin
+credenciales y `200` con las correctas. **Deliberadamente no desplegado
+todavía** (a petición explícita del dueño del proyecto): la imagen
+`full-msf` publicada en GHCR sigue sin este cambio hasta el próximo ciclo de
+publicación (`seclab image publish` / el workflow de CI), y
+`terraform/oracle` (ni DigitalOcean ni GCP) no se tocó para exponer el
+puerto 7681 en la nube — ver TESTING_GAPS.md.
+
+### Añadido — Fase 9/11, Tailscale Serve automático para todos los puertos de `lab`
+
+A petición explícita del dueño del proyecto: dentro de la tailnet no hace
+falta redirigir puertos por SSH (`-L`) para llegar al escritorio/
+code-server/Jupyter/bienvenida — la propia tailnet ya es el control de
+acceso, duplicar esa protección con un túnel encima no aporta nada. Antes
+había que ejecutar `tailscale serve` a mano, un puerto a la vez
+(`seclab tailscale status` sólo recordaba el comando). Ahora, tanto en local
+(`docker-compose.tailscale.yml`) como en la nube (Oracle,
+`terraform/oracle/templates/cloud-init.yaml.tftpl`), el propio nodo Tailscale
+publica automáticamente, en cuanto autentica, el puerto SSH y los cuatro
+puertos web (`SECLAB_PUERTO_SSH/WEB/NOVNC/CODE/JUPYTER`) directo en la
+interfaz de Tailscale — alcanzables como `<hostname>:<puerto>` desde
+cualquier dispositivo de la tailnet, sin tocar la publicación en `127.0.0.1`
+para nada. En local, esto cambió el `command` del contenedor `tailscale`
+para no usar `exec` sobre `containerboot` (necesario para poder correr el
+bucle de `tailscale serve` después de que autentique), con un `trap` para
+seguir reenviando la señal de apagado limpio.
+
+### Añadido — Fase 11, Oracle Cloud: secretos reales para escritorio/code-server/RDP en la nube
+
+Arreglo completo del hueco documentado más abajo ("Escritorio/code-server
+desactivados en la nube"). Un primer diseño generaba
+`SECLAB_VNC_PASSWORD`/`SECLAB_CODE_PASSWORD` directamente en Terraform con
+`random_password`, pero a petición explícita del dueño del proyecto se
+reemplazó por un único generador para local y remoto: **`seclab init`**
+(y `seclab init --regenerar-secretos`) genera ahora también
+`SECLAB_OCI_VNC_PASSWORD`, `SECLAB_OCI_CODE_PASSWORD` y
+`SECLAB_OCI_RDP_PASSWORD` en `.env` — mismo mecanismo, mismas reglas
+(`es_secreto_inseguro`, `generar_secreto`), que los secretos del contenedor
+local. `sincronizar_tfvars_oracle_desde_env` (`lib/cloud.sh`) los copia a
+`terraform.tfvars`; `terraform/oracle` ya no tiene ningún `random_password`
+ni depende del provider `hashicorp/random`. El flujo correcto, en orden:
+generación (`seclab init`) → `.env` → proveedor de nube (Terraform), nunca
+al revés. Los tres siguen expuestos como salidas `sensitive` de Terraform
+por comodidad (`terraform output -raw vnc_password/code_password/
+rdp_password`), pero `.env` es ahora la fuente real. Ya no hace falta
+desactivar `SECLAB_HABILITAR_DESKTOP`/`CODE`: un despliegue en Oracle trae
+escritorio y code-server igual que uno local.
+
+### Añadido — Fase 11, Oracle Cloud: escritorio del HOST (XFCE + xrdp, opt-in)
+
+Distinto del escritorio del contenedor (noVNC): un escritorio real en la VM
+Ubuntu misma, para configurar el host directamente (fuera de Docker), no
+para el trabajo normal de laboratorio. Opt-in explícito
+(`habilitar_escritorio_host`/`SECLAB_OCI_HABILITAR_ESCRITORIO_HOST`, `false`
+por defecto: instala paquetes reales — xfce4, xfce4-goodies, xrdp — y usa
+RAM/CPU de más). RDP no tiene equivalente a una llave SSH: exige una
+contraseña real de sistema (PAM) para el usuario `ubuntu`, generada por
+`seclab init` (`SECLAB_OCI_RDP_PASSWORD`), nunca un valor por defecto — el
+`chpasswd` del cloud-init no afecta a `sshd_config` (SSH sigue siendo sólo
+por llave). El puerto 3389 sigue exactamente la misma regla de dos pasos
+que el SSH del host (`cerrar_ssh_publico`): abierto públicamente mientras no
+se cierre, y siempre servido también por Tailscale
+(`tailscale serve --tcp 3389`).
+
+### Corregido — Fase 11, Oracle Cloud: bugs reales encontrados en el primer despliegue real
+
+Ningún módulo de nube (DigitalOcean, GCP, Oracle) había pasado nunca por un
+`apply` real seguido de una verificación de acceso de verdad — sólo por
+`terraform validate`/`plan`. El primer intento real en Oracle, con el perfil
+`full-msf`, encontró varios bugs reales, todos corregidos en
+`terraform/oracle`:
+
+- **`assign_public_ip`/`prohibit_public_ip_on_vnic` fijos a `habilitar_tailscale`**:
+  con Tailscale activo la instancia perdía la IP pública en el mismo `apply`
+  que activaba Tailscale por primera vez, sin ninguna forma de comprobar que
+  Tailscale funcionaba antes de perder el único otro camino de entrada.
+  Solución: nueva variable `cerrar_ssh_publico`, deliberadamente separada de
+  `habilitar_tailscale` — primero se verifica, luego se cierra (ver
+  docs/cloud.md, "Habilitar Tailscale sin quedarte fuera"). Mientras no se
+  cierra, la lista de seguridad abre también el puerto 22 del host (no sólo
+  `puerto_ssh`/2222 del contenedor) como vía de rescate real, independiente
+  de Docker.
+- **`outputs.tf`'s `ssh_user` hardcodeado a `"ubuntu"`**: ese es el usuario
+  del host, no el del contenedor (al que en realidad se llega por
+  `puerto_ssh`). `seclab cloud connect`/`wait` nunca habían conectado de
+  verdad. Corregido a una variable `ssh_username` (default `"seclab"`,
+  mismo criterio que `ssh_username` en `terraform/gcp/variables.tf`).
+- **Ninguna variable de `/etc/seclab-cloud/entorno` llegaba nunca al
+  contenedor**: el `docker run` del `seclab.service` nunca tuvo
+  `--env-file`/`-e`, así que `SECLAB_SSH_PUBKEY`, `SECLAB_HABILITAR_DESKTOP`,
+  etc. sólo existían en el entorno de systemd (útiles sólo para la
+  sustitución `$${VAR}` dentro de la propia línea de `ExecStart`), nunca
+  dentro del contenedor. El mismo patrón existe, sin verificar todavía, en
+  `terraform/digitalocean` y `terraform/gcp` (ver TESTING_GAPS.md).
+- **`SECLAB_SSH_PUBKEY` nunca se pasaba al contenedor** (consecuencia directa
+  del bug anterior): el `entrypoint.sh` abortaba con "No hay llave pública
+  SSH configurada", aun con la llave correctamente inyectada en el host.
+- **`SECLAB_HABILITAR_DESKTOP`/`SECLAB_HABILITAR_CODE` sin secretos**: los
+  perfiles `full`/`full-msf` traen escritorio y code-server activados por
+  defecto, y ambos exigen `SECLAB_VNC_PASSWORD`/`SECLAB_CODE_PASSWORD` no
+  vacíos o el contenedor aborta en bucle. Arreglo temporal (a petición del
+  dueño del proyecto): desactivarlos en el cloud-init de Oracle hasta
+  implementar generación real de secretos para despliegues cloud (ver
+  TESTING_GAPS.md) — el despliegue en Oracle queda sólo con SSH/terminal,
+  sin noVNC ni code-server, por ahora.
+
 ### Cambiado — Fase 8, el escaneo de imágenes (Trivy) deja de bloquear la publicación
 
 Decisión explícita del dueño del proyecto, tras publicar `full-msf` de

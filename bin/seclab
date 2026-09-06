@@ -125,10 +125,7 @@ mostrar_accesos() {
         detalle "Las contraseñas del escritorio y de code-server están en .env."
         detalle "No se imprimen aquí a propósito: esta salida acaba en capturas y proyectores."
     else
-        case "$perfil" in
-            lite) detalle "El escritorio web y code-server llegan con el perfil 'desktop': seclab start --profile desktop" ;;
-            *)    detalle "Ningún servicio web activo. Revísalo con 'seclab status'." ;;
-        esac
+        detalle "Ningún servicio web activo. Revísalo con 'seclab status'."
     fi
 }
 
@@ -205,7 +202,7 @@ ${C_NEGRITA}TODAVÍA NO IMPLEMENTADOS${C_FIN}                        ${C_GRIS}fa
   mcp ...                   Servidor MCP para agentes de IA               ${C_GRIS}13${C_FIN}
 
 ${C_NEGRITA}OPCIONES DE init${C_FIN}
-  --profile PERFIL          lite | desktop | full | full-msf
+  --profile PERFIL          lite | full | full-msf
   --regenerar-secretos      Genera secretos nuevos aunque .env ya los tenga
   --sin-arrancar            Prepara todo pero no levanta el contenedor
 
@@ -763,7 +760,13 @@ cmd_init() {
 
     # --- 4. Secretos --------------------------------------------------------
     local clave valor generados=0
-    for clave in SECLAB_VNC_PASSWORD SECLAB_CODE_PASSWORD SECLAB_JUPYTER_TOKEN SECLAB_MCP_TOKEN; do
+    # Los tres SECLAB_OCI_*_PASSWORD son el mismo mecanismo que los del
+    # contenedor local, no uno aparte: 'seclab init' los genera aquí, quedan
+    # en .env, y terraform/oracle los LEE de ahí (sincronizar_tfvars_oracle_
+    # desde_env en lib/cloud.sh) — Terraform ya no genera sus propios
+    # secretos con random_password. Un mismo generador sirve para el
+    # despliegue local y el remoto, en vez de dos mecanismos separados.
+    for clave in SECLAB_VNC_PASSWORD SECLAB_CODE_PASSWORD SECLAB_JUPYTER_TOKEN SECLAB_MCP_TOKEN SECLAB_TERMINAL_PASSWORD SECLAB_OCI_VNC_PASSWORD SECLAB_OCI_CODE_PASSWORD SECLAB_OCI_RDP_PASSWORD; do
         valor="$(leer_variable "$ARCHIVO_ENV" "$clave")"
         if [ "$regenerar" = true ] || es_secreto_inseguro "$valor"; then
             escribir_variable "$ARCHIVO_ENV" "$clave" "$(generar_secreto 32)"
@@ -1662,7 +1665,7 @@ cmd_open() {
     if ! servicio_activo web; then
         abortar "Este laboratorio no sirve la página de bienvenida." \
                 "No hay nada que abrir." \
-                "Llega con el perfil 'desktop': seclab start --profile desktop"
+                "Revisa SECLAB_HABILITAR_WEB en .env: viene activado por defecto en los tres perfiles."
     fi
 
     url="$(url_servicio SECLAB_PUERTO_WEB 8080)"
@@ -1808,7 +1811,7 @@ cmd_escritorio() {
             printf '%s\n' "${C_NEGRITA}seclab escritorio${C_FIN} — configuración del escritorio del curso" >&2
             printf '\n  %s\n' "restablecer   Barra superior, fuente de la terminal y accesos directos" >&2
             printf '\n' >&2
-            detalle "Sólo afecta al perfil desktop, full y full-msf."
+            detalle "Afecta a los tres perfiles (lite, full, full-msf): todos traen escritorio."
             ;;
     esac
 }
@@ -1826,7 +1829,7 @@ escritorio_restablecer() {
     if ! servicio_activo escritorio; then
         abortar "Este laboratorio no trae escritorio." \
                 "No hay configuración de escritorio que restablecer." \
-                "Usa el perfil 'desktop' o superior: seclab start --profile desktop"
+                "Revisa SECLAB_HABILITAR_DESKTOP en .env: viene activado por defecto en los tres perfiles."
     fi
 
     usuario="$(leer_variable "$ARCHIVO_ENV" SECLAB_USUARIO)"
@@ -2707,10 +2710,11 @@ tailscale_status() {
     fi
 
     printf '\n' >&2
-    detalle "Para publicar un servicio de 'lab' hacia tu tailnet (nunca hacia Internet):"
+    detalle "Los puertos de 'lab' (SSH y servicios web) ya quedan publicados hacia tu"
+    detalle "tailnet automáticamente al arrancar (nunca hacia Internet) — sin pasos"
+    detalle "manuales. Para ver qué quedó publicado de verdad:"
     detalle "  docker exec \$(docker compose -f docker-compose.tailscale.yml ps -q tailscale) \\"
-    detalle "    tailscale serve --bg --tcp 2222 tcp://host.docker.internal:${SECLAB_PUERTO_SSH:-2222}"
-    detalle "Sustituye el puerto por el que quieras exponer (ver SECLAB_PUERTO_* en .env)."
+    detalle "    tailscale serve status"
 }
 
 tailscale_down() {

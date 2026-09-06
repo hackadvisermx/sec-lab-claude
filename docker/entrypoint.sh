@@ -26,16 +26,18 @@ paso()  { printf '[SecLab] %s\n' "$1" >&2; }
 # 1. Qué servicios levanta este contenedor
 # -----------------------------------------------------------------------------
 # Una variable SECLAB_HABILITAR_* vacía significa «lo que corresponda al
-# perfil»; con `true` o `false` manda el alumno. Así elegir el perfil `desktop`
-# trae escritorio sin tener que activar tres variables a mano, y quien no lo
-# quiera puede apagarlo sin cambiar de perfil.
+# perfil»; con `true` o `false` manda el alumno. Los tres perfiles (`lite`,
+# `full`, `full-msf`) traen el escritorio fusionado desde `lite`: no existe ya
+# un perfil "sin escritorio", así que estos servicios van activados por
+# defecto en cualquiera de los tres, y quien no lo quiera puede apagarlo sin
+# cambiar de perfil.
 PERFIL="${SECLAB_PERFIL:-lite}"
 
 por_perfil() {
     case "$PERFIL" in
-        desktop|full|full-msf)
+        lite|full|full-msf)
             case "$1" in
-                escritorio|code|web) printf 'true' ;;
+                escritorio|code|web|terminal) printf 'true' ;;
                 *) printf 'false' ;;
             esac
             ;;
@@ -57,6 +59,7 @@ SERVICIO_ESCRITORIO="$(resolver_servicio escritorio "${SECLAB_HABILITAR_DESKTOP:
 SERVICIO_CODE="$(resolver_servicio code "${SECLAB_HABILITAR_CODE:-}" CODE)"
 SERVICIO_WEB="$(resolver_servicio web "${SECLAB_HABILITAR_WEB:-}" WEB)"
 SERVICIO_JUPYTER="$(resolver_servicio jupyter "${SECLAB_HABILITAR_JUPYTER:-}" JUPYTER)"
+SERVICIO_TERMINAL="$(resolver_servicio terminal "${SECLAB_HABILITAR_TERMINAL:-}" TERMINAL)"
 
 # Un servicio activado que la imagen no trae no puede quedarse en un aviso: el
 # healthcheck lo buscaría, no lo encontraría y el laboratorio se quedaría
@@ -65,7 +68,7 @@ exigir_binario() {
     local binario="$1" servicio="$2" variable="$3"
     command -v "$binario" >/dev/null 2>&1 && return 0
     fallo "${servicio} está activado pero el perfil '${PERFIL}' no lo trae (falta ${binario})." \
-          "Usa el perfil 'desktop' o superior, o pon ${variable}=false en .env."
+          "Revisa SECLAB_PERFIL (debe ser 'lite', 'full' o 'full-msf'), o pon ${variable}=false en .env."
 }
 
 # En forma de `if` y no de `[ ... ] && ...`: con `set -e`, una lista AND que
@@ -92,6 +95,9 @@ fi
 if [ "$SERVICIO_CODE" = "true" ]; then
     exigir_binario code-server "code-server" SECLAB_HABILITAR_CODE
 fi
+if [ "$SERVICIO_TERMINAL" = "true" ]; then
+    exigir_binario ttyd "el terminal web" SECLAB_HABILITAR_TERMINAL
+fi
 if [ "$SERVICIO_JUPYTER" = "true" ]; then
     exigir_binario jupyter "Jupyter" SECLAB_HABILITAR_JUPYTER
 fi
@@ -102,7 +108,7 @@ fi
 # Valores de relleno que no se aceptan nunca, ni siquiera en un lab local.
 RELLENO='^(change-this-password|changeme|cambiame|password|passwd|123456|admin|secret|seclab|toor|kali)$'
 
-for variable in SECLAB_VNC_PASSWORD SECLAB_CODE_PASSWORD SECLAB_JUPYTER_TOKEN SECLAB_MCP_TOKEN; do
+for variable in SECLAB_VNC_PASSWORD SECLAB_CODE_PASSWORD SECLAB_JUPYTER_TOKEN SECLAB_MCP_TOKEN SECLAB_TERMINAL_PASSWORD; do
     valor="${!variable:-}"
     [ -z "$valor" ] && continue
     if printf '%s' "$valor" | grep -Eqi "$RELLENO"; then
@@ -133,6 +139,9 @@ if [ "$SERVICIO_CODE" = "true" ]; then
 fi
 if [ "$SERVICIO_JUPYTER" = "true" ]; then
     exigir_secreto SECLAB_JUPYTER_TOKEN "Jupyter"
+fi
+if [ "$SERVICIO_TERMINAL" = "true" ]; then
+    exigir_secreto SECLAB_TERMINAL_PASSWORD "El terminal web"
 fi
 
 if [ -z "${SECLAB_SSH_PUBKEY:-}" ]; then
@@ -361,6 +370,7 @@ if [ "$SERVICIO_WEB" = "true" ]; then
     SECLAB_HABILITAR_DESKTOP="$SERVICIO_ESCRITORIO" \
     SECLAB_HABILITAR_CODE="$SERVICIO_CODE" \
     SECLAB_HABILITAR_JUPYTER="$SERVICIO_JUPYTER" \
+    SECLAB_HABILITAR_TERMINAL="$SERVICIO_TERMINAL" \
         /usr/local/bin/seclab-bienvenida /run/seclab/web/index.html
     paso "Página de bienvenida generada"
 fi
@@ -470,6 +480,21 @@ if [ "$SERVICIO_CODE" = "true" ]; then
             /workspace
 fi
 
+if [ "$SERVICIO_TERMINAL" = "true" ]; then
+    # A diferencia de code-server/Jupyter, ttyd no acepta su credencial por
+    # entorno: sólo por `--credential usuario:contraseña` en la línea de
+    # comandos (que sí queda visible vía `ps`/`/proc/<pid>/cmdline` dentro del
+    # contenedor). No hay alternativa en ttyd 1.7.7 — es una limitación real
+    # de la herramienta, documentada aquí a propósito en vez de ocultada. El
+    # mismo zsh que da la sesión SSH, para que el terminal web no se sienta
+    # distinto.
+    registrar_programa terminal "$USUARIO" "$HOGAR" "HOME=\"${HOGAR}\",USER=\"${USUARIO}\"" \
+        /usr/local/bin/ttyd \
+            --port "${SECLAB_PUERTO_TERMINAL:-7681}" \
+            --credential "${USUARIO}:${SECLAB_TERMINAL_PASSWORD}" \
+            /usr/bin/zsh
+fi
+
 if [ "$SERVICIO_WEB" = "true" ]; then
     registrar_programa bienvenida "$USUARIO" /run/seclab/web "HOME=\"${HOGAR}\"" \
         /usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /run/seclab/web
@@ -491,6 +516,7 @@ chmod 0600 "$CONF_SUP"
     [ "$SERVICIO_CODE" = "true" ] && printf 'code\n'
     [ "$SERVICIO_WEB" = "true" ] && printf 'web\n'
     [ "$SERVICIO_JUPYTER" = "true" ] && printf 'jupyter\n'
+    [ "$SERVICIO_TERMINAL" = "true" ] && printf 'terminal\n'
     true
 } > /run/seclab/servicios
 chmod 0644 /run/seclab/servicios

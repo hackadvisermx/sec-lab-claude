@@ -11,19 +11,21 @@
 # Docker, que suele ser bastante menos que la del portátil.
 requisitos_perfil() {
     case "$1" in
-        lite)     echo "2 5"  ;;
-        desktop)  echo "4 10" ;;
+        # 'lite' fusiona lo que antes eran 'lite' y 'desktop': trae XFCE,
+        # code-server, ttyd y noVNC desde el nivel más básico, así que hereda
+        # el requisito de RAM/disco del antiguo perfil 'desktop'.
+        lite)     echo "4 10" ;;
         full)     echo "8 25" ;;
         full-msf) echo "8 30" ;;
         *)        echo ""     ;;
     esac
 }
 
-perfiles_validos() { echo "lite desktop full full-msf"; }
+perfiles_validos() { echo "lite full full-msf"; }
 
 # Perfiles que tienen etapa real en el Dockerfile hoy. El resto son diseño
 # todavía: se recomiendan y se validan, pero no se pueden construir.
-perfiles_implementados() { echo "lite desktop full full-msf"; }
+perfiles_implementados() { echo "lite full full-msf"; }
 
 perfil_implementado() {
     case " $(perfiles_implementados) " in
@@ -36,7 +38,7 @@ perfil_implementado() {
 perfil_recomendado() {
     local ram="$1" perfil req
     local mejor=""
-    for perfil in lite desktop full full-msf; do
+    for perfil in lite full full-msf; do
         req="$(requisitos_perfil "$perfil" | cut -d' ' -f1)"
         if [ "$ram" -ge "$req" ]; then mejor="$perfil"; fi
     done

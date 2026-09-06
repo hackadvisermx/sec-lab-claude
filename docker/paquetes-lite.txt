@@ -1,5 +1,12 @@
-# Paquetes del perfil `lite`: shell, red, recon básico y utilidades comunes.
-# Una línea por paquete. Las líneas que empiezan por # se ignoran.
+# Paquetes del perfil `lite`: shell, red, recon básico, escritorio XFCE y
+# utilidades comunes. Una línea por paquete. Las líneas que empiezan por # se
+# ignoran.
+#
+# Fusiona lo que antes eran dos perfiles separados (`lite` y `desktop`): a
+# petición explícita del dueño del proyecto, ya no hay un perfil "sin
+# escritorio" — todo despliegue trae XFCE, code-server, ttyd y noVNC desde el
+# nivel más básico. `full`/`full-msf` ya no significan "con escritorio", sólo
+# "con más herramientas ofensivas".
 #
 # La imagen base (Ubuntu 26.04 LTS) está anclada por el digest de su lista de
 # manifiestos, y el build genera un manifiesto con las versiones realmente
@@ -45,6 +52,9 @@ zip
 rsync
 xxd
 bsdextrautils
+# Reemplazos modernos de 'ls'/'cat', mismo espíritu que ripgrep/fzf de arriba.
+eza
+bat
 
 # --- Red ---
 # Nombres reales, no transitorios: 'dnsutils' y 'p7zip-full' son paquetes puente
@@ -66,8 +76,8 @@ nmap
 whatweb
 libcap2-bin
 # nikto NO está aquí: el paquete de Ubuntu es de una versión muy anterior a la
-# actual. Se instalará desde su publicación oficial dentro del paquete `web`
-# (Fase 12), que es donde corresponde a un escáner de vulnerabilidades web.
+# actual. Se instala fijado en el perfil `full`, donde corresponde a un
+# escáner de vulnerabilidades web.
 
 # --- Acceso ---
 openssh-server
@@ -83,14 +93,63 @@ openvpn
 iptables
 
 # --- Supervisión de servicios ---
-# Desde el perfil `desktop` hay más de un proceso que mantener vivo (sshd, el
-# servidor X con VNC, websockify, code-server). Se usa supervisor en todos los
-# perfiles, incluido `lite` con sólo sshd, para que el arranque siga el mismo
-# camino en todos: dos formas de arrancar serían dos verdades que acabarían
-# discrepando.
+# Más de un proceso que mantener vivo (sshd, el servidor X con VNC,
+# websockify, code-server, ttyd). Se usa supervisor en todos los perfiles
+# para que el arranque siga el mismo camino en todos: dos formas de arrancar
+# serían dos verdades que acabarían discrepando.
 supervisor
 
 # --- Python ---
 python3
 python3-pip
 python3-venv
+
+# --- Escritorio ---
+# xfce4 es un metapaquete: arrastra el gestor de ventanas, el panel y el
+# escritorio. Se elige XFCE por ligero: un escritorio pesado dentro de un
+# contenedor que ya vive en una VM se nota enseguida.
+xfce4
+xfce4-terminal
+mousepad
+dbus-x11
+xdg-utils
+
+# --- Servidor X con VNC ---
+# Xvnc de TigerVNC es servidor X y servidor VNC en un solo proceso. La
+# alternativa (Xvfb + x11vnc) son dos procesos y dos formas de fallar.
+tigervnc-standalone-server
+tigervnc-common
+# vncpasswd vive en tigervnc-tools, no en el servidor. Sin él no hay forma de
+# escribir el archivo de contraseña que Xvnc espera, y el arranque falla con un
+# «command not found» a mitad del entrypoint.
+tigervnc-tools
+x11-utils
+x11-xserver-utils
+xauth
+
+# --- Acceso por navegador ---
+# noVNC es el cliente VNC en el navegador; websockify hace el puente entre el
+# WebSocket del navegador y el puerto TCP de Xvnc.
+novnc
+websockify
+
+# --- Aceleración y fuentes ---
+libgl1-mesa-dri
+fonts-dejavu-core
+fonts-liberation
+# La barra de estado de tmux usa emoji (🚀 📂 🕒). Sin una fuente que los
+# tenga, dentro del escritorio salen como cuadros: los separadores Powerline
+# los cubre la Nerd Font, pero los emoji no.
+fonts-noto-color-emoji
+
+# --- Descompresión de los paquetes fijados ---
+# Los tarballs oficiales de Mozilla y de Nerd Fonts vienen en .tar.xz, y la
+# imagen base de Ubuntu no trae xz: sin esto, `tar -xJf` falla con un código de
+# salida 2 que no dice por qué.
+xz-utils
+
+# --- Dependencias de ejecución de Firefox ---
+# El tarball oficial de Mozilla no declara dependencias: hay que ponerlas a
+# mano. Las de GTK y X11 las trae XFCE; estas dos, no.
+libdbus-glib-1-2
+libasound2t64

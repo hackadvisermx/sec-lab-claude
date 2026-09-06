@@ -95,18 +95,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: docker-compose.yml solo
         run: docker compose -f docker-compose.yml config --quiet
-      - name: + override de escritorio
-        run: docker compose -f docker-compose.yml -f docker-compose.desktop.yml config --quiet
       - name: + override de VPN
         run: docker compose -f docker-compose.yml -f docker-compose.vpn.yml config --quiet
-      - name: + escritorio + VPN
-        run: |
-          docker compose -f docker-compose.yml -f docker-compose.desktop.yml \
-            -f docker-compose.vpn.yml config --quiet
-      - name: docker-bake.hcl (los cuatro perfiles)
+      - name: docker-bake.hcl (los tres perfiles)
         run: |
           docker buildx bake --print lite >/dev/null
-          docker buildx bake --print desktop >/dev/null
           docker buildx bake --print full >/dev/null
           docker buildx bake --print full-msf >/dev/null
       - name: docker-compose.tailscale.yml (Fase 9 — proyecto propio, nunca junto a docker-compose.yml)
@@ -195,7 +188,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        perfil: [lite, desktop, full]
+        perfil: [lite, full]
     steps:
       - uses: actions/checkout@v4
       - name: .env efímero de CI
@@ -235,7 +228,7 @@ jobs:
       - name: Limpieza
         if: always()
         run: |
-          docker compose -f docker-compose.yml -f docker-compose.desktop.yml \
+          docker compose -f docker-compose.yml \
             -f docker-compose.vpn.yml down --volumes --remove-orphans 2>/dev/null || true
           rm -f ./ci-ssh-key ./ci-ssh-key.pub ./.env
           rm -rf ./vpn ./workspace ./backups ./secretos

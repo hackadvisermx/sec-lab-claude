@@ -32,11 +32,11 @@ con un job que depende de otro que falló.
 |---|---|---|
 | `shellcheck` | `bash -n`/`sh -n` sobre todos los scripts de shell, y ShellCheck de verdad sobre `bin/seclab`, `lib/*.sh`, `scripts/*.sh` (incluido `scripts/ci/*.sh`), `docker/*.sh`, `docker/shell/*.sh` | Sí |
 | `hadolint` | `docker/Dockerfile`. Se ignoran `DL3008`/`DL3009` (fijar versión de paquetes apt): la política del proyecto (`docs/politica-herramientas.md`) es fijar por checksum sólo las herramientas ofensivas de evolución rápida instaladas fuera de apt; el resto sigue el LTS de Ubuntu | Sí |
-| `compose-validate` | `docker compose config` sobre las combinaciones reales de `docker-compose.yml` + `docker-compose.desktop.yml` + `docker-compose.vpn.yml`, y `docker buildx bake --print` de los cuatro perfiles | Sí |
+| `compose-validate` | `docker compose config` sobre las combinaciones reales de `docker-compose.yml` + `docker-compose.vpn.yml`, y `docker buildx bake --print` de los tres perfiles | Sí |
 | `gitleaks` | Escaneo de secretos de todo el historial con la action oficial de gitleaks | Sí |
 | `terraform` | Si existe `terraform/`: `terraform fmt -check` y `terraform validate`. Si no existe (Fases 10-11, sin implementar todavía): el job pasa con un aviso explícito de que no hay nada que validar — nunca finge haber comprobado algo que no existe | Sí (cuando aplica) |
 | `seguridad` | `scripts/verificar-seguridad.sh` contra un `.env` efímero generado por `scripts/ci/preparar-env.sh` | Sí |
-| `build-test` (matriz `lite`/`desktop`/`full`) | `seclab image build` + `seclab start` + `scripts/smoke.sh` contra un contenedor real, en un runner efímero de GitHub; después, escaneo de la imagen con Trivy (`CRITICAL,HIGH`, informativo, nunca bloquea) | El build y los smoke tests sí; Trivy nunca bloquea, en ningún workflow (ver "Escaneo de imágenes" más abajo) |
+| `build-test` (matriz `lite`/`full`) | `seclab image build` + `seclab start` + `scripts/smoke.sh` contra un contenedor real, en un runner efímero de GitHub; después, escaneo de la imagen con Trivy (`CRITICAL,HIGH`, informativo, nunca bloquea) | El build y los smoke tests sí; Trivy nunca bloquea, en ningún workflow (ver "Escaneo de imágenes" más abajo) |
 | `vpn-test` | `scripts/ci/probar-vpn.sh`: reproduce el procedimiento completo de la Fase 7 contra un servidor OpenVPN local de prueba (arranque de perfil, rutas exactas, rechazo por solape, killswitch) | Sí |
 
 `full-msf` no entra en la matriz de `build-test`: es el perfil más pesado de
@@ -50,7 +50,7 @@ Dockerfile, misma cadena de etapas). Se construye y publica sólo bajo demanda
 1. **`verificar`** — invoca `ci.yml` entero como workflow reusable
    (`uses: ./.github/workflows/ci.yml`). Si cualquiera de sus jobs falla,
    ningún job posterior se ejecuta.
-2. **`build-publish`** (matriz `lite`/`desktop`/`full`) — con QEMU
+2. **`build-publish`** (matriz `lite`/`full`) — con QEMU
    (`docker/setup-qemu-action`) y Buildx, construye y publica en GHCR para
    `linux/amd64` y `linux/arm64` a la vez con `docker/build-push-action`
    (`provenance: true`), etiqueta con la versión del tag (`vX.Y.Z` → `X.Y.Z`),

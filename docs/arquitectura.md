@@ -16,7 +16,7 @@ graph TB
         vpncfg["vpn/&lt;perfil&gt;/<br/><i>.ovpn del usuario</i>"]
 
         subgraph docker["Docker"]
-            lab["Servicio lab<br/>perfil: lite · desktop · full · full-msf<br/><i>OpenVPN + iptables dentro,<br/>seclab-vpn los gestiona</i>"]
+            lab["Servicio lab<br/>perfil: lite · full · full-msf<br/><i>OpenVPN + iptables dentro,<br/>seclab-vpn los gestiona</i>"]
             subgraph targets["Red aislada de targets (Fase 12)"]
                 dvwa["DVWA"]
                 juice["Juice Shop"]
@@ -126,9 +126,8 @@ nunca por omisión.
 ```mermaid
 graph LR
     base["base<br/><i>usuario · locale</i>"] --> lite
-    lite["lite ✅<br/>shell · red · recon · SSH"] --> desktop
-    desktop["desktop ✅<br/>+ XFCE · noVNC · code-server · Firefox"] --> full
-    full["full ✅<br/>+ web · ad · privesc · wordlists"] --> fullmsf["full-msf ✅<br/>+ Metasploit"]
+    lite["lite ✅<br/>shell · red · recon · SSH ·<br/>XFCE · noVNC · code-server · ttyd · Firefox"] --> full
+    full["full ✅<br/>+ web · ad · privesc · wordlists ·<br/>13 herramientas nuevas (recon, pivoting, pwn)"] --> fullmsf["full-msf ✅<br/>+ Metasploit"]
 
 
 ```
@@ -139,9 +138,11 @@ usa Kali; ver [politica-herramientas.md](politica-herramientas.md). Las etapas s
 comparten para aprovechar la caché. Cada imagen lleva etiquetas con perfil,
 versión, commit, fecha, arquitectura y la ruta del manifiesto de herramientas.
 
-Los cuatro perfiles están construidos. Cada uno parte del anterior, así que la
-caché se reutiliza y un cambio en la configuración del curso no obliga a
-reinstalar XFCE ni a volver a descargar Metasploit.
+Los tres perfiles están construidos. `lite` ya incluye el escritorio completo
+—el antiguo perfil `desktop` se fusionó en él, no hay perfil "sin escritorio"—,
+y cada uno de los otros dos parte del anterior, así que la caché se reutiliza
+y un cambio en la configuración del curso no obliga a reinstalar XFCE ni a
+volver a descargar Metasploit.
 
 ## Archivos de Compose
 

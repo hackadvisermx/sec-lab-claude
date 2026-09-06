@@ -135,23 +135,30 @@ up`, esto **no recrea `lab`**: Tailscale vive en un contenedor y un proyecto
 de Compose completamente aparte, así que activarlo nunca te hace perder una
 shell abierta dentro de `lab`.
 
-## Publicar un servicio de `lab` hacia tu tailnet
+## Publicar los servicios de `lab` hacia tu tailnet (automático)
 
-Con el nodo arriba y autenticado (`seclab tailscale status` te lo confirma),
-usa `tailscale serve` dentro del propio contenedor para publicar, por
-ejemplo, el SSH de `lab` hacia tu tailnet (nunca hacia Internet — `tailscale
-serve` sólo es alcanzable por los dispositivos de tu propia tailnet):
+En cuanto el nodo autentica, el propio contenedor `tailscale` corre
+`tailscale serve --bg --tcp <puerto>` por cada puerto de `lab` que
+corresponda a tu `.env` (`SECLAB_PUERTO_SSH`, `SECLAB_PUERTO_WEB`,
+`SECLAB_PUERTO_NOVNC`, `SECLAB_PUERTO_CODE`, `SECLAB_PUERTO_JUPYTER`) —
+apuntando siempre a `host.docker.internal:<PUERTO>`, nunca hacia Internet
+(`tailscale serve` sólo es alcanzable por los dispositivos de tu propia
+tailnet). No hace falta ningún paso manual ni redirigir puertos por SSH
+(`-L`): desde cualquier dispositivo de tu tailnet, con el nodo arriba, entras
+directo a `http://<hostname>:<puerto>` (por ejemplo,
+`http://seclab:8080` para code-server) exactamente igual que si fuera local.
+
+`seclab tailscale status` muestra qué nodo y qué IP tiene el contenedor; para
+ver qué puertos quedaron publicados de verdad:
 
 ```bash
-docker exec $(docker compose -f docker-compose.tailscale.yml ps -q tailscale) \
-  tailscale serve --bg --tcp 2222 tcp://host.docker.internal:2222
+docker exec $(docker compose -f docker-compose.tailscale.yml ps -q tailscale) tailscale serve status
 ```
 
-Sustituye `2222` por el puerto real de `SECLAB_PUERTO_SSH` en tu `.env` si lo
-cambiaste, y repite el mismo patrón para cualquier otro servicio de `lab`
-(escritorio, code-server) apuntando siempre a `host.docker.internal:<PUERTO>`.
-`seclab tailscale status` imprime este mismo comando ya con tu puerto SSH
-configurado.
+Si cambiaste alguno de esos puertos en `.env` después de que el nodo ya
+estuviera arriba, un `seclab tailscale down` + `up` vuelve a aplicar la
+publicación con los puertos nuevos (el `command` del contenedor los relee de
+su propio entorno en cada arranque).
 
 ## Convivencia con VPN de plataforma
 
